@@ -9,6 +9,17 @@ local function copy(t)
   for k, v in pairs(t) do out[k] = v end
   return out
 end
+local function proxyCallbacks(proxy, address)
+  for name, method in pairs(proxy) do
+    if type(method) == "function" then
+      local fn = method
+      proxy[name] = setmetatable({address = address, name = name}, {
+        __call = function(_, ...) return fn(...) end,
+      })
+    end
+  end
+  return proxy
+end
 function M.new(config, recipe)
   local w = {time = 0, lp = 9000000, items = {}, fluids = {}, transfers = {}, requests = 0,
     pulses = 0, outputs = {ritual = 0, filler = 0}, done = true, plantStates = {}, events = {}, config = config,
@@ -149,6 +160,7 @@ function M.new(config, recipe)
     end}
   w.proxies = {me = me, tp = tp, ritual = ritual, filler = filler}
   w.types = {me = "me_interface", tp = "transposer", ritual = "redstone", filler = "redstone"}
+  for address, proxy in pairs(w.proxies) do proxyCallbacks(proxy, address) end
   function w:addPlant(address, duration, tier)
     local plant = {allowed = false, active = false, work = false, duration = duration or 4, maximum = 0, progress = 0}
     self.plantStates[#self.plantStates + 1] = plant
@@ -170,6 +182,7 @@ function M.new(config, recipe)
       getWorkProgress = function() return plant.progress end,
       getWorkMaxProgress = function() return plant.maximum end,
     }
+    proxyCallbacks(self.proxies[address], address)
     return plant
   end
   w.component = {

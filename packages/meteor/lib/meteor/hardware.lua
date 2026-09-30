@@ -3,7 +3,11 @@ local M, Hardware = {}, {}
 Hardware.__index = Hardware
 local function need(proxy, methods, label)
   for _, name in ipairs(methods) do
-    assert(type(proxy[name]) == "function", label .. " lacks " .. name)
+    local method = proxy[name]
+    local mt = type(method) == "table" and getmetatable(method)
+    -- OC component.proxy exposes methods as tables with a callable metatable.
+    assert(type(method) == "function" or (type(mt) == "table" and type(mt.__call) == "function"),
+      label .. " lacks " .. name)
   end
   return proxy
 end

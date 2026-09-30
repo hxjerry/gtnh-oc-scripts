@@ -202,6 +202,14 @@ test("transfer followed by clear failure never duplicates input", function()
   assert(c.state == "FAULT" and #w.transfers == 1 and w.pulses == 0)
 end)
 
+test("non-callable ME fields cannot masquerade as required callbacks", function()
+  local _, w, cfg = setup()
+  w.proxies.me.getItemsInNetwork = {}
+  local fresh = hardware.new(w.component, cfg)
+  raises(function() fresh:connect() end)
+  assert(w.pulses == 0 and #w.transfers == 0 and w.outputs.ritual == 0 and w.outputs.filler == 0)
+end)
+
 test("only Ore Drilling Plants I-IV are discovered; basic miners are never controlled", function()
   local _, w, cfg, _, hw = setup()
   w:addPlant("plant-3", 6, 2)
