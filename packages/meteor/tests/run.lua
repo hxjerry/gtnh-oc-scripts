@@ -313,6 +313,75 @@ test("catalogue nested data cannot be modified", function()
   raises(function() cat.recipes[1] = {} end, "immutable")
 end)
 
+test("ME search matches both product kinds without merging metadata or NBT variants", function()
+  local _, w, _, _, hw = setup()
+  local a, b = world.item("mod:metal", 7, "\0a"), world.item("mod:metal", 7, "\0b")
+  a.label, b.label = "Iron Dust", "Iron Dust"
+  w:add(a, 3); w:add(b, 4)
+  local fluid = {kind = "fluid", name = "molten.iron", label = "Molten Iron", hasTag = false}
+  w.fluids = {{name = fluid.name, label = fluid.label, hasTag = false, amount = 144}}
+  local bad = world.item("mod:broken", 0, "\0hidden")
+  bad.label = "Iron with hidden NBT"
+  w:add(bad, 1); w.items[identity.key(bad)].tag = nil
+  local rows, info = hw:searchProducts("  IRON  ")
+  local keys = {}
+  for _, row in ipairs(rows) do keys[identity.key(row)] = true end
+  assert(#rows == 3 and keys[identity.key(a)] and keys[identity.key(b)] and keys[identity.key(fluid)])
+  assert(info.skipped == 1 and info.firstError:find("NBT unavailable", 1, true))
+  assert(not info.itemTruncated and not info.fluidTruncated)
+  rows = hw:searchProducts("molten.iron")
+  assert(#rows == 1 and identity.same(rows[1], fluid))
+  rows = hw:searchProducts("Iron.*")
+  assert(#rows == 0) -- User input is literal, never a Lua pattern.
+end)
+
+test("ME search caps each kind and stops consuming the item stream at the limit", function()
+  local _, w, _, _, hw = setup()
+  w.proxies.me.getItemsInNetwork = function() error("Bulk items exceed OC RAM") end
+  w.proxies.me.allItems = function()
+    local index = 0
+    return setmetatable({}, {__call = function()
+      index = index + 1
+      assert(index <= 1051, "Search consumed an unbounded item stream")
+      local stack = world.item("mod:meta", index, "\0exact" .. index)
+      stack.label = index <= 1000 and "Unrelated Ore" or "Iron Dust"
+      return stack
+    end})
+  end
+  for index = 1, 50 do
+    w.fluids[index] = {name = "molten.iron." .. index, label = "Iron Fluid " .. index, hasTag = false, amount = 144}
+  end
+  local rows, info = hw:searchProducts("iron")
+  local counts = {item = 0, fluid = 0}
+  for _, row in ipairs(rows) do
+    counts[row.kind] = counts[row.kind] + 1
+    if row.kind == "item" then assert(row.tag == "\0exact" .. row.damage) end
+  end
+  assert(counts.item == 50 and counts.fluid == 50 and #rows == 100)
+  assert(info.itemTruncated and not info.fluidTruncated and info.skipped == 0)
+  w.fluids[51] = {name = "molten.iron.51", label = "Iron Fluid 51", hasTag = false, amount = 144}
+  rows, info = hw:searchProducts("iron")
+  assert(#rows == 100 and info.itemTruncated and info.fluidTruncated)
+end)
+
+test("monitoring an added product never loads unrelated ME inventory", function()
+  local _, w, _, _, hw = setup()
+  local a, b = world.item("mod:product", 1, "\0a"), world.item("mod:product", 1, "\0b")
+  w:add(a, 12); w:add(b, 900)
+  local fluid = {kind = "fluid", name = "molten.iron", label = "Molten Iron", hasTag = false}
+  w.fluids = {{name = fluid.name, label = fluid.label, hasTag = false, amount = 288}}
+  w.proxies.me.getItemsInNetwork = function() error("Bulk items exceed OC RAM") end
+  w.proxies.me.getFluidsInNetwork = function() error("Bulk fluids exceed OC RAM") end
+  local rows = {{key = identity.key(a), product = a}, {key = identity.key(fluid), product = fluid}}
+  local counts = hw:stock(rows)
+  assert(counts[identity.key(a)] == 12 and counts[identity.key(fluid)] == 288)
+  w.items[identity.key(a)] = nil
+  counts = hw:stock(rows)
+  assert(counts[identity.key(a)] == 0 and counts[identity.key(fluid)] == 288)
+  w.networkDown = true
+  raises(function() hw:stock(rows) end, "ME disconnected")
+end)
+
 test("ME quantities remain separate across metadata, NBT and fluid identities", function()
   local _, w, _, _, hw = setup()
   local a, b = world.item("mod:product", 1, "\0a"), world.item("mod:product", 1, "\0b")
@@ -328,7 +397,7 @@ test("ME quantities remain separate across metadata, NBT and fluid identities", 
   local counts = hw:stock(rows)
   assert(counts[identity.key(a)] == 19 and counts[identity.key(b)] == 300)
   assert(counts[identity.key(fluid)] == 144000)
-  w.items[identity.key(otherMeta)].tag = nil
+  w.items[identity.key(a)].tag = nil
   raises(function() hw:stock(rows) end, "NBT unavailable")
 end)
 
@@ -352,6 +421,95 @@ test("native-resolution T3 launch renders products and keeps menu interaction us
   ui:close()
   local width, height = gpu.getResolution()
   assert(width == 160 and height == 50 and gpu.getDepth() == 8)
+end)
+
+test("product picker requires a term and saves items and fluids from one shared search", function()
+  local cfg = configModule.defaults()
+  local cat = {recipes = {recipe}}
+  local w = world.new(cfg, recipe)
+  local tagged = world.item("mod:metal", 2032, "\0\255iron")
+  tagged.label = "Iron Dust"
+  w:add(tagged, 3)
+  local fluid = {kind = "fluid", name = "molten.iron", label = "Molten Iron", hasTag = false}
+  w.fluids = {{name = fluid.name, label = fluid.label, hasTag = false, amount = 144}}
+  local hw = hardware.new(w.component, cfg):connect()
+  local gpu = openos.gpu()
+  local path = "/etc/meteor/search-picker.cfg"
+  local ui = require("meteor.ui").new(gpu, cfg, cat, {
+    searchProducts = function(query, pause) return hw:searchProducts(query, pause) end,
+    save = function() configModule.save(path, cfg); return true end,
+  })
+  ui.pendingOre = {key = "OREDICT:oreIron", label = "Iron Ore"}
+  ui:setScreen("mapping")
+  w.networkDown = true
+  ui:handle({"key_down", "keyboard", 13, 28})
+  assert(ui.screen == "prompt" and gpu.render():find("SEARCH ME PRODUCTS", 1, true))
+  ui:handle({"clipboard", "keyboard", "   "})
+  ui:handle({"key_down", "keyboard", 13, 28})
+  assert(ui.screen == "prompt" and ui.message:find("nonblank", 1, true))
+  ui:handle({"key_down", "keyboard", 9, 15})
+  assert(ui.screen == "mapping")
+  w.networkDown = false
+  ui:handle({"key_down", "keyboard", 97, 0})
+  ui:handle({"clipboard", "keyboard", "IRON"})
+  ui:handle({"key_down", "keyboard", 13, 28})
+  ui:tickSearch(); ui:draw()
+  assert(ui.screen == "browse" and #ui:entries() == 2)
+  assert(gpu.render():find("Iron Dust", 1, true) and gpu.render():find("Molten Iron", 1, true))
+  for _, desired in ipairs({tagged, fluid}) do
+    if ui.screen == "mapping" then
+      ui:handle({"key_down", "keyboard", 97, 0})
+      assert(ui.prompt.text == "IRON")
+      ui:handle({"key_down", "keyboard", 13, 28})
+      ui:tickSearch()
+    end
+    for index, row in ipairs(ui.browseRows) do if identity.same(row, desired) then ui.selected = index end end
+    ui:handle({"key_down", "keyboard", 13, 28})
+    assert(ui.screen == "mapping" and ui.browseRows == nil)
+  end
+  local saved = configModule.load(path).oreProducts["OREDICT:oreIron"]
+  assert(#saved == 2 and identity.same(saved[1], tagged) and identity.same(saved[2], fluid))
+  ui:close()
+end)
+
+test("ME search can be canceled and failed replacement searches cannot expose stale products", function()
+  local cfg = configModule.defaults()
+  local w = world.new(cfg, recipe)
+  local target = world.item("mod:iron", 1)
+  w:add(target, 5)
+  local hw = hardware.new(w.component, cfg):connect()
+  local ui = require("meteor.ui").new(openos.gpu(), cfg, {recipes = {recipe}}, {
+    searchProducts = function(query, pause) return hw:searchProducts(query, pause) end,
+  })
+  ui.pendingOre = {key = "OREDICT:oreIron", label = "Iron Ore"}
+  ui:setScreen("mapping"); ui:beginProductSearch()
+  ui:handle({"clipboard", "keyboard", "iron"})
+  ui:handle({"key_down", "keyboard", 13, 28}); ui:tickSearch()
+  assert(ui.screen == "browse" and identity.same(ui.browseRows[1], target))
+  ui:handle({"key_down", "keyboard", 47, 0})
+  ui:handle({"key_down", "keyboard", 9, 15})
+  assert(ui.screen == "browse" and identity.same(ui.browseRows[1], target))
+  ui:handle({"key_down", "keyboard", 47, 0})
+  w.networkDown = true
+  ui:handle({"key_down", "keyboard", 13, 28}); ui:tickSearch()
+  assert(ui.screen == "prompt" and ui.browseRows == nil and ui.message:find("ME disconnected", 1, true))
+  ui:handle({"key_down", "keyboard", 9, 15})
+  w.networkDown = false
+  local consumed = 0
+  w.proxies.me.allItems = function()
+    return setmetatable({}, {__call = function()
+      consumed = consumed + 1
+      return world.item("mod:unrelated", consumed)
+    end})
+  end
+  ui:beginProductSearch()
+  ui:handle({"key_down", "keyboard", 13, 28}); ui:tickSearch(); ui:draw()
+  assert(ui.screen == "searching" and consumed > 0 and consumed < 100)
+  assert(ui.gpu.render():find("Tab cancels", 1, true))
+  local stoppedAt = consumed
+  ui:handle({"key_down", "keyboard", 9, 15}); ui:tickSearch()
+  assert(ui.screen == "mapping" and consumed == stoppedAt and ui.browseRows == nil)
+  ui:close()
 end)
 
 test("dashboard labels fit their columns without losing fitting characters", function()

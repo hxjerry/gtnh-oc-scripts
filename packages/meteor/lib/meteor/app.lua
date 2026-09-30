@@ -44,11 +44,11 @@ function M.main(args)
     return true
   end
   function callbacks.discover() return hardware:discover() end
-  function callbacks.catalogue(kind)
+  function callbacks.searchProducts(query, pause)
     connect()
-    local values, skipped = hardware:catalogue(kind)
-    if #skipped > 0 then controller:log("Excluded " .. #skipped .. " entries with unreadable NBT: " .. skipped[1]) end
-    return values
+    local values, info = hardware:searchProducts(query, pause)
+    if info.skipped > 0 then controller:log("Excluded " .. info.skipped .. " search matches with unreadable NBT: " .. info.firstError) end
+    return values, info
   end
   function callbacks.run(id, loop)
     connect()
@@ -87,6 +87,7 @@ function M.main(args)
           if not tickOK then controller:fault(tickError) end
         end
         if signal[1] then ui:handle(signal) end
+        ui:tickSearch()
       end
       if computer.uptime() >= nextDraw or signal[1] then
         ui:draw(controller:view())

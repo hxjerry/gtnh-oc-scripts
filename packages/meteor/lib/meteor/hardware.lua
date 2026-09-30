@@ -49,7 +49,7 @@ function Hardware:connect()
   self.ritual.setOutput(h.ritualSide, 0)
   self.filler = need(proxy(h.filler, "redstone"), {"setOutput", "getInput"}, "Filler redstone")
   self.filler.setOutput(h.fillerOutSide, 0)
-  self.me = need(proxy(h.me, "me_interface"), {"getItemsInNetwork", "getFluidsInNetwork", "getCraftables", "setInterfaceConfiguration", "getInterfaceConfiguration"}, "Block ME interface")
+  self.me = need(proxy(h.me, "me_interface"), {"allItems", "getItemInNetwork", "getFluidInNetwork", "getItemsInNetwork", "getFluidsInNetwork", "getCraftables", "setInterfaceConfiguration", "getInterfaceConfiguration"}, "Block ME interface")
   self.transposer = need(proxy(h.transposer, "transposer"), {"getStackInSlot", "getInventorySize", "transferItem"}, "Transposer")
   for _, side in ipairs({h.sourceSide, h.orbSide, h.outputSide}) do
     assert(number(self.transposer.getInventorySize(side), "inventory size") > 0, "Missing inventory on side " .. side)
@@ -85,42 +85,69 @@ function Hardware:safe()
   end
   return #errors == 0, table.concat(errors, "; ")
 end
-function Hardware:network(kind)
+function Hardware:searchProducts(query, pause)
   assert(self.me, "Configure and connect hardware first")
-  local values, reason
-  if kind == "fluid" then values, reason = self.me.getFluidsInNetwork()
-  else values, reason = self.me.getItemsInNetwork() end
-  assert(type(values) == "table", "ME read failed: " .. tostring(reason))
-  return values
-end
-function Hardware:catalogue(kind)
-  local values, skipped = {}, {}
-  for _, stack in pairs(self:network(kind)) do
+  assert(type(query) == "string" and query:find("%S"), "Enter a search term")
+  query = query:match("^%s*(.-)%s*$"):lower()
+  local values, seen, counts = {}, {}, {item = 0, fluid = 0}
+  local info = {itemTruncated = false, fluidTruncated = false, skipped = 0}
+  local function take(stack, kind)
+    assert(type(stack) == "table", "ME returned an invalid stack")
+    if not tostring(stack.label or ""):lower():find(query, 1, true) and
+      not tostring(stack.name or ""):lower():find(query, 1, true) then return false end
     local ok, descriptor = pcall(identity.fromStack, stack, kind)
-    if ok then values[#values + 1] = descriptor
-    else skipped[#skipped + 1] = tostring(descriptor) end
+    if not ok then
+      info.skipped = info.skipped + 1
+      info.firstError = info.firstError or tostring(descriptor)
+      return false
+    end
+    local key = identity.key(descriptor)
+    if seen[key] then return false end
+    if counts[kind] == 50 then return true end
+    values[#values + 1], seen[key] = descriptor, true
+    counts[kind] = counts[kind] + 1
+    return false
+  end
+  -- allItems is a callable OC userdata: transfer one stack, not the entire network.
+  do
+    local nextItem, reason = self.me.allItems()
+    assert(nextItem, "ME item search failed: " .. tostring(reason))
+    local scanned = 0
+    while true do
+      local stack = nextItem()
+      if not stack then break end
+      if take(stack, "item") then info.itemTruncated = true; break end
+      scanned = scanned + 1
+      if pause and scanned % 64 == 0 then pause(scanned) end
+    end
+  end
+  -- The pinned OC API has no fluid iterator or filter; only matches are retained.
+  do
+    local fluids, reason = self.me.getFluidsInNetwork()
+    assert(type(fluids) == "table", "ME fluid search failed: " .. tostring(reason))
+    for _, stack in pairs(fluids) do
+      if take(stack, "fluid") then info.fluidTruncated = true; break end
+    end
   end
   table.sort(values, function(a, b)
-    return a.label == b.label and identity.key(a) < identity.key(b) or a.label < b.label
+    local al, bl = a.label:lower(), b.label:lower()
+    if al == bl then return identity.key(a) < identity.key(b) end
+    return al < bl
   end)
-  return values, skipped
+  return values, info
 end
 function Hardware:stock(rows)
-  local required, counts, kinds = {}, {}, {}
+  local counts = {}
   for _, row in ipairs(rows) do
-    required[row.product.kind .. "\0" .. row.product.name] = true
+    local product = row.product
+    local stack, reason
+    if product.kind == "fluid" then stack, reason = self.me.getFluidInNetwork(identity.filter(product))
+    else stack, reason = self.me.getItemInNetwork(identity.filter(product)) end
+    assert(reason == nil, "ME stock read failed: " .. tostring(reason))
     counts[row.key] = 0
-    kinds[row.product.kind] = true
-  end
-  for kind in pairs(kinds) do
-    for _, stack in pairs(self:network(kind)) do
-      if required[kind .. "\0" .. tostring(stack.name)] then
-        -- Unknown NBT in a monitored registry family invalidates the snapshot.
-        local key = identity.key(identity.fromStack(stack, kind))
-        if counts[key] ~= nil then
-          counts[key] = counts[key] + number(kind == "fluid" and stack.amount or stack.size, "ME quantity")
-        end
-      end
+    if stack then
+      assert(identity.same(identity.fromStack(stack, product.kind), product), "ME returned a different product")
+      counts[row.key] = number(product.kind == "fluid" and stack.amount or stack.size, "ME quantity")
     end
   end
   return counts

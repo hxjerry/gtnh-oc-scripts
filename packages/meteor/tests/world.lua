@@ -83,6 +83,32 @@ function M.new(config, recipe)
     return true
   end
   local me = {}
+  function me.allItems()
+    if w.networkDown then error("ME disconnected") end
+    local key
+    return setmetatable({}, {__call = function()
+      if w.networkDown then error("ME disconnected") end
+      key = next(w.items, key)
+      if not key then return nil end
+      local stack = copy(w.items[key])
+      stack.size = w.stock[key] or 0
+      return stack
+    end})
+  end
+  function me.getItemInNetwork(descriptor)
+    if w.networkDown then error("ME disconnected") end
+    local key = identity.key(descriptor)
+    if not w.items[key] then return nil end
+    local stack = copy(w.items[key])
+    stack.size = w.stock[key] or 0
+    return stack
+  end
+  function me.getFluidInNetwork(descriptor)
+    if w.networkDown then error("ME disconnected") end
+    for _, stack in ipairs(w.fluids) do
+      if stack.name == descriptor.name and not stack.hasTag then return copy(stack) end
+    end
+  end
   function me.getItemsInNetwork(filter)
     if w.networkDown then error("ME disconnected") end
     local result = {}
