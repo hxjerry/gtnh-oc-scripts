@@ -31,7 +31,7 @@ The application sends a high pulse of at least **0.25 seconds**, then returns lo
 live LP >= meteor LP + activation LP (100000) + configured reserve LP
 ```
 
-Checks occur before delivery and again immediately before pulsing. After pulsing, a full activation-plus-meteor LP decrease must be observed before miners may start. If an altar refills LP so quickly that this decrease is masked, the program faults safely; disable or gate that refill during activation. Other soul-network consumers can race any LP read: use a reserve and avoid sharing the ritual network with uncontrolled drains.
+Checks occur before delivery and again immediately before pulsing. There is **no post-activation LP-decrease check**: after the configured impact wait, plants start whether or not an LP drop was observable. A failed activation is therefore not detected through LP; commission the crystal activator and impact timing physically. The dashboard shows the last checked LP value. Other soul-network consumers can race any pre-activation LP read: use a reserve and avoid sharing the ritual network with uncontrolled drains.
 
 ### Drop inventory and catalyst
 
@@ -100,7 +100,7 @@ The pinned meteor focus definitions contain no NBT. They are deliberately treate
 ```text
 LP guard → catalyst fetch/craft → delivery → fixed 30s melt wait
          → focus fetch/craft → delivery → live LP guard → activation pulse
-         → LP-debit confirmation + impact wait → all Ore Drilling Plants stop after work
+         → impact wait → all Ore Drilling Plants stop after work
          → filler held high → input settle → no-work HIGH or completion pulse → filler off
          → processing cooldown → fresh ME stock → next serial cycle
 ```
@@ -109,7 +109,7 @@ LP guard → catalyst fetch/craft → delivery → fixed 30s melt wait
 
 Starting a cycle writes a durable dirty journal **before** external effects. Stop during a cycle, exceptions, timeouts, or a restart with dirty/partial journal latch a fault. All reachable outputs are set low and plants disabled; a partially staged input is not replayed. Auto/loop modes never resume automatically after restarting the application.
 
-**Recovery requires inspection**: remove stray/dropped focus items, ensure the MRS is inactive, clear the meteor area or finish the abandoned operation manually, retract and stop the plants, and empty both drop slots. Then acknowledge **Reset / recovery**; idle filler HIGH is allowed. Recovery clears the dedicated ME reservation and journal; it does not restart auto/loop. LP-debit and completion observations are useful interlocks, not substitutes for these physical invariants.
+**Recovery requires inspection**: remove stray/dropped focus items, ensure the MRS is inactive, clear the meteor area or finish the abandoned operation manually, retract and stop the plants, and empty both drop slots. Then acknowledge **Reset / recovery**; idle filler HIGH is allowed. Recovery clears the dedicated ME reservation and journal; it does not restart auto/loop. Software status and filler signals do not replace these physical inspections.
 
 ## Development and verification
 
@@ -120,9 +120,9 @@ python3 packages/meteor/tools/import_catalog.py /path/to/GT-New-Horizons-Modpack
 cmp packages/meteor/lib/meteor/catalog.lua /tmp/catalog.lua
 ```
 
-Observed verification: **35 deterministic behavioural tests**, Lua 5.2 syntax checks, reproducible catalogue generation, and host-side runs of the actual TUI/application entry point and installed launcher. Automation and display smokes covered exact-NBT item/fluid mappings, absent targets, policies, ritual debit/two plants/idle-HIGH filler, already-active 160×50 and initial 80×25 displays, and display restoration. A native-I/O smoke executed the pinned OpenOS buffer/full-buffer source over a simulated filesystem whose raw close returns no values: Tab back/cancel, Backspace editing, TUI config save/reload, complete ritual journal write/clear, and OPPM registration preserving existing repositories all passed. Regression tests also cover failed flush/close preserving installed config and failed journal flush retaining interrupted-cycle intent. No live Minecraft instance or OC devices were available; installation wiring must be commissioned in-game.
+Observed verification: **35 deterministic behavioural tests**, Lua 5.2 syntax checks, reproducible catalogue generation, and host-side runs of the actual TUI/application entry point and installed launcher. Automation/display smokes covered exact-NBT item/fluid mappings, absent targets, policies, ritual activation/two plants/idle-HIGH filler, already-active 160×50 and initial 80×25 displays, and display restoration. A native-I/O smoke executed the pinned OpenOS buffering source over a simulated filesystem with nil-returning close: Tab back/cancel, Backspace editing, config save/reload, ritual journal write/clear, and OPPM registration preserving existing repositories passed. Latest display smoke confirmed headers and item/fluid rows share column starts, including a long wide-character label; its launcher run completed after LP was immediately replenished, retaining the catalyst and impact waits. Regression tests retain pre-activation LP protection and cover LP refill without mining blockage, failed config flush/close preserving installed settings, and failed journal flush retaining interrupted intent. No live Minecraft instance or OC devices were available; installation wiring must be commissioned in-game.
 
-OC component proxy methods are callable tables with `__call`, not necessarily Lua functions. Capability checks accept both callable forms but reject missing/non-callable fields. The machine fixture models native callable method objects; a launcher smoke also wrapped the GPU methods and completed exact-input autocrafting, the 30-second catalyst delay, ritual LP debit, both plants, filler, a clean journal, and shutdown.
+OC component proxy methods are callable tables with `__call`, not necessarily Lua functions. Capability checks accept both callable forms but reject missing/non-callable fields. The machine fixture models native callable method objects; a launcher smoke also wrapped the GPU methods and completed exact-input autocrafting, the 30-second catalyst delay, activation, both plants, filler, a clean journal, and shutdown.
 
 Integration sources:
 

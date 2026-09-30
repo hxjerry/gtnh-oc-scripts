@@ -143,7 +143,7 @@ function M.new(config, recipe)
       assert(w.focusAt, "Ritual before focus")
       if w.catalystAt then assert(w.time - w.catalystAt >= 30, "Catalyst not ready") end
       assert(w.outputs.filler == 0, "Ritual overlaps filler")
-      if not w.failedActivation then w.lp = w.lp - recipe.lp - 100000 end
+      w.lp = w.lp - recipe.lp - 100000
     elseif strength == 0 and w.outputs.ritual > 0 then
       w.pulseDuration = w.time - w.pulseAt
     end

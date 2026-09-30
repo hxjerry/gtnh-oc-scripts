@@ -166,15 +166,11 @@ function Controller:tick()
   elseif self.state == "ARM" then
     assert(now - self.since < math.min(240, self.config.inputTimeout), "LP changed after dropping focus; recover before the item despawns")
     if self:lpReady() then
-      self.beforePulseLP, self.debitSeen = self.lp, false
       self.hw:ritualOutput(true)
       self:transition("PULSE", "Activating ritual (external crystal activator)")
     end
   elseif self.state == "METEOR" then
-    self.lp = self.hw:readLP()
-    if self.beforePulseLP - self.lp >= self.recipe.lp + self.catalog.activationLP then self.debitSeen = true end
     if now - self.since >= self.config.meteorWait then
-      assert(self.debitSeen, "No full ritual LP debit observed; check activator/focus (fast LP refill can mask debit)")
       self.hw:startPlants()
       self.nextPlant = 0
       self:transition("MINING", "Ore Drilling Plants running; waiting for every plant to finish")

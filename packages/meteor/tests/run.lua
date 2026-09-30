@@ -176,12 +176,19 @@ test("idle filler HIGH permits a cycle but does not skip cleanup startup", funct
   assert(w.pulses == 2 and c.mode == "loop")
 end)
 
-test("no ritual debit means no mining or filler", function()
-  local c, w = setup({catalyst = false})
-  w.failedActivation = true
+test("LP refilling after activation does not gate mining or skip the impact wait", function()
+  local c, w, cfg = setup({catalyst = false})
+  local initialLP = w.lp
   c:run("iron", false)
-  tick(c, w, 5)
-  assert(c.state == "FAULT" and not w.plantStates[1].started and w.fillerAt == nil)
+  untilState(c, w, "PULSE")
+  w.lp = initialLP -- An altar can immediately replenish the ritual's cost.
+  untilState(c, w, "METEOR")
+  tick(c, w, cfg.meteorWait - 0.1)
+  assert(c.state == "METEOR" and not w.plantStates[1].started)
+  untilState(c, w, "MINING", 1)
+  assert(w.pulses == 1 and w.plantStates[1].allowed and w.lp == initialLP)
+  untilState(c, w, "IDLE")
+  assert(w.fillerReported and w.outputs.filler == 0)
 end)
 
 test("plant disconnection stops the whole site", function()

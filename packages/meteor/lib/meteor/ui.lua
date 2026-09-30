@@ -5,6 +5,7 @@ local unicode = require("unicode")
 
 local M = {}
 local WIDTH, HEIGHT = 160, 50
+local COLUMN = {item = 4, current = 67, target = 84, active = 101, meteor = 109, craft = 145}
 local KEY = { enter = 28, backspace = 14, tab = 15, up = 200, down = 208, left = 203, right = 205, pageup = 201, pagedown = 209, home = 199, finish = 207 }
 local COLORS = { bg = 0x101820, panel = 0x1B2935, white = 0xE8EEF2, muted = 0x8DA2B0, cyan = 0x53D8D1, green = 0x7DE38D, yellow = 0xF1C75B, red = 0xFF7272, blue = 0x76A9FA }
 local PAGE_SIZE = 18
@@ -544,9 +545,14 @@ function M.new(gpu, config, catalog, callbacks)
     self:notice()
     local mode = tostring(self.view.mode or "idle")
     local state = tostring(self.view.state or "ready")
-    self:put(2, 4, "Mode: " .. mode .. "     State: " .. state .. "     LP: " .. tostring(self.view.lp or "?"), COLORS.yellow)
+    self:put(2, 4, "Mode: " .. mode .. "     State: " .. state .. "     LP (last check): " .. tostring(self.view.lp or "?"), COLORS.yellow)
     self:put(2, 5, "Selected meteor: " .. tostring(self.view.recipe or "-") .. "  /  " .. tostring(self.view.detail or ""), COLORS.white)
-    self:put(2, 7, "OUTPUTS   Item / fluid                      Current             Target      Active    Meteor         Craft", COLORS.cyan)
+    self:put(COLUMN.item, 7, "OUTPUTS / Item / fluid", COLORS.cyan)
+    self:put(COLUMN.current, 7, "Current", COLORS.cyan)
+    self:put(COLUMN.target, 7, "Target", COLORS.cyan)
+    self:put(COLUMN.active, 7, "Active", COLORS.cyan)
+    self:put(COLUMN.meteor, 7, "Meteor", COLORS.cyan)
+    self:put(COLUMN.craft, 7, "Craft", COLORS.cyan)
     self:put(2, 8, string.rep("─", 156), COLORS.muted)
     local rows = self.view.rows or {}
     local filter = (self.filters.home or ""):lower()
@@ -565,12 +571,12 @@ function M.new(gpu, config, catalog, callbacks)
       local label = tostring(row.product.label or row.product.name) .. " [" .. (row.product.kind == "fluid" and "fluid" or tostring(row.product.damage)) .. (row.product.hasTag and ", NBT " .. identity.fingerprint(row.product) or "") .. "]"
       local policy = row.policy or {}
       self:put(2, line, prefix, COLORS.cyan)
-      self:put(4, line, slice(label, 1, 60), COLORS.white)
-      self:put(67, line, formatAmount(row.stock, row.product), COLORS.white)
-      self:put(84, line, formatAmount(policy.target or 0, row.product), COLORS.white)
-      self:put(101, line, policy.active and "ON" or "off", policy.active and COLORS.green or COLORS.muted)
-      self:put(109, line, tostring(policy.meteor or "-"), COLORS.white)
-      self:put(145, line, policy.craft and "yes" or "no", COLORS.white)
+      self:put(COLUMN.item, line, unicode.wtrunc(label, COLUMN.current - COLUMN.item - 3), COLORS.white)
+      self:put(COLUMN.current, line, formatAmount(row.stock, row.product), COLORS.white)
+      self:put(COLUMN.target, line, formatAmount(policy.target or 0, row.product), COLORS.white)
+      self:put(COLUMN.active, line, policy.active and "ON" or "off", policy.active and COLORS.green or COLORS.muted)
+      self:put(COLUMN.meteor, line, unicode.wtrunc(tostring(policy.meteor or "-"), COLUMN.craft - COLUMN.meteor - 3), COLORS.white)
+      self:put(COLUMN.craft, line, policy.craft and "yes" or "no", COLORS.white)
     end
     self:put(2, 28, "Rows " .. #visible .. "   page " .. pages .. "  |  Filter: " .. (self.filters.home or "") .. " (/ to edit)", COLORS.muted)
     self:put(2, 30, "ORE DRILLING PLANTS", COLORS.cyan)
