@@ -320,6 +320,25 @@ end)
 local openos = require("openos")
 local runtime = openos.install()
 local configModule = require("meteor.config")
+test("native-resolution T3 launch renders products and keeps menu interaction usable", function()
+  local gpu = openos.gpu()
+  gpu.setResolution(160, 50)
+  gpu.setDepth(8)
+  local ui = require("meteor.ui").new(gpu, configModule.defaults(), {recipes = {recipe}})
+  ui:draw({mode = "stopped", state = "IDLE", rows = {{
+    key = identity.key(product), product = product, stock = 0,
+    policy = {target = 100, active = true, meteor = "iron", craft = false},
+  }}})
+  local frame = gpu.render()
+  assert(frame:find("DASHBOARD", 1, true) and frame:find("0 items", 1, true))
+  assert(frame:find("100 items", 1, true) and frame:find("iron", 1, true))
+  ui:handle({"key_down", "keyboard", 109, 0})
+  assert(gpu.render():find("Hardware setup", 1, true))
+  ui:close()
+  local width, height = gpu.getResolution()
+  assert(width == 160 and height == 50 and gpu.getDepth() == 8)
+end)
+
 test("wiring cannot feed enable back as completion or mix routed inputs", function()
   local config = configModule.defaults()
   config.hardware.fillerInSide = config.hardware.fillerOutSide

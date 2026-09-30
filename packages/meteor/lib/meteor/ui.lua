@@ -98,8 +98,11 @@ function M.new(gpu, config, catalog, callbacks)
   local gotDepth, depth = pcall(gpu.getDepth)
   if gotDepth and depth then self.oldDepth = depth end
   if gotDepth and depth ~= 8 then gpu.setDepth(8) end
-  local set, reason = gpu.setResolution(WIDTH, HEIGHT)
-  assert(set ~= false, "cannot set GPU resolution to 160x50: " .. tostring(reason or "unsupported resolution"))
+  -- OC returns false when the requested resolution is already active.
+  local _, reason = gpu.setResolution(WIDTH, HEIGHT)
+  local actualWidth, actualHeight = gpu.getResolution()
+  assert(actualWidth == WIDTH and actualHeight == HEIGHT,
+    "cannot set GPU resolution to 160x50: " .. tostring(reason or "resolution did not take effect"))
 
   function self:put(x, y, text, color, background)
     if y < 1 or y > HEIGHT or x > WIDTH then return end

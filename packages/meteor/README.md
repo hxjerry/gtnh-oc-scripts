@@ -11,6 +11,8 @@ An OpenOS application for **GTNH 2.9.0 development**, pinned to modpack commit [
 - Any number of **GT Ore Drilling Plants I–IV** attached through OC Adapters. The program enumerates `gt_machine`, verifies `getName()`, and selects exactly `multimachine.oredrill1` through `multimachine.oredrill4`. Basic miners, pumps, void miners, and unrelated machines are excluded and never controlled.
 - The filler and the ritual activator are external mechanisms built by the player; the application controls their specified I/O contracts.
 
+**Display startup:** Tier III's native size is **160×50**. OC's `gpu.setResolution` returns whether the resolution *changed*, so `false` is normal when that size is already active. Meteor verifies the resulting dimensions rather than treating an unchanged resolution as unsupported.
+
 ### ME staging
 
 Dedicate one ME Interface configuration/storage slot to Meteor, normally slot **1**. Configure this same slot in the TUI. Leave it unconfigured before first use. The application requests exactly one matching item in that slot, transfers exactly one into the drop inventory, then clears its reservation. Clearing lets unused staging stock return to ME.
@@ -116,7 +118,7 @@ python3 packages/meteor/tools/import_catalog.py /path/to/GT-New-Horizons-Modpack
 cmp packages/meteor/lib/meteor/catalog.lua /tmp/catalog.lua
 ```
 
-Observed verification: **29 deterministic behavioural tests**, Lua 5.2 syntax checks, reproducible catalogue generation, and a host-side run of the actual TUI/application entry point. The smoke scenario configured an exact-NBT item and an untagged fluid as membership mappings, displayed absent targets as zero, selected an active policy and meteor, persisted settings, manually ran ritual debit/two drilling plants/idle-HIGH filler, and exercised emergency quit, journal completion, and GPU restoration. Rendering was captured on a simulated 160×50 GPU. No live Minecraft instance or OC devices were available; installation wiring must be commissioned in-game.
+Observed verification: **30 deterministic behavioural tests**, Lua 5.2 syntax checks, reproducible catalogue generation, and host-side runs of the actual TUI/application entry point and installed launcher. The automation smoke configured exact-NBT item and untagged fluid membership mappings, displayed absent targets as zero, selected an active policy and meteor, persisted settings, and manually ran ritual debit/two drilling plants/idle-HIGH filler through clean journal completion. Display smoke runs launched with an already-active **160×50** display and an initial **80×25** display, rendered the 160×50 dashboard, exercised the menu and quit confirmation, and restored the original resolution and depth. No live Minecraft instance or OC devices were available; installation wiring must be commissioned in-game.
 
 Integration sources:
 
@@ -124,3 +126,5 @@ Integration sources:
 - [GT5 MTEOreDrillingPlantBase: ore processing and work area](https://github.com/GTNewHorizons/GT5-Unofficial/blob/bf2a8219cd7dd043a4a8940abc633552588015b3/src/main/java/gregtech/common/tileentities/machines/multi/MTEOreDrillingPlantBase.java)
 - [Computronics: native machine callbacks](https://github.com/GTNewHorizons/Computronics/blob/7e94219667f95354e9f721c0b4532173681a70e9/src/main/java/pl/asie/computronics/integration/gregtech/gregtech5/DriverMachine.java)
 - [OC: ME interface configuration](https://github.com/GTNewHorizons/OpenComputers/blob/1e4559ff5f2443695cb28c7cdc9fba87219a862b/src/main/scala/li/cil/oc/integration/appeng/internal/InterfaceEnvironmentBase.scala)
+- [OC: Tier III screen dimensions](https://github.com/GTNewHorizons/OpenComputers/blob/1e4559ff5f2443695cb28c7cdc9fba87219a862b/src/main/scala/li/cil/oc/Settings.scala#L528)
+- [OC: resolution changed/not-changed return contract](https://github.com/GTNewHorizons/OpenComputers/blob/1e4559ff5f2443695cb28c7cdc9fba87219a862b/src/main/scala/li/cil/oc/server/component/GraphicsCard.scala#L403-L421)

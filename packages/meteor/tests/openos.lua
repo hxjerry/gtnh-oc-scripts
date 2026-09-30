@@ -123,7 +123,11 @@ function M.gpu()
   local gpu = {
     getResolution = function() return width, height end,
     maxResolution = function() return 160, 50 end,
-    setResolution = function(w, h) assert(w <= 160 and h <= 50); width, height = w, h; blank(); return true end,
+    setResolution = function(w, h)
+      assert(w <= 160 and h <= 50)
+      if w == width and h == height then return false end
+      width, height = w, h; blank(); return true
+    end,
     getForeground = function() return foreground, false end,
     getBackground = function() return background, false end,
     setForeground = function(c) foreground = c; colors[c] = true; return c end,
