@@ -79,9 +79,11 @@ Run `meteor`, or `meteor --config /path/config.cfg`. Default mutable configurati
 4. **Manual meteor recipe**: inspect focus, catalyst, separate LP costs, and paged ore weights. Run once or loop. Manual autocrafting permission is separate from each stock policy.
 5. **Automatic**: below-target active products trigger their selected meteors, one complete cycle at a time. Competing deficits are chosen round-robin. A target absent from a successful ME snapshot counts as **zero**, including when only other metadata/NBT variants exist. A failed ME/API observation is still an error, never fabricated zero stock.
 
-Keyboard: arrows/Enter select; Esc back; `/` filter; PgUp/PgDn page; Home/End list bounds. Dashboard shortcuts: **M** actions, **A** automatic, **S** emergency stop, **Q** quit. Lists also support touch and scrolling; value forms support clipboard paste. `D` removes an ore-product mapping. **All machine statuses** exposes every discovered plant, beyond the dashboard's short summary.
+Keyboard: arrows/Enter select; **Tab back/cancel**; `/` filter; PgUp/PgDn page; Home/End list bounds. **Backspace** deletes text in value forms. Esc is reserved by Minecraft's GUI and is not forwarded to Meteor. Dashboard shortcuts: **M** actions, **A** automatic, **S** emergency stop, **Q** quit. Lists also support touch and scrolling; value forms support clipboard paste. `D` removes an ore-product mapping. **All machine statuses** exposes every discovered plant, beyond the dashboard's short summary.
 
 Dialogs never call `event.pull` or block the controller. Stop before changing settings. Hardware edits remain possible in a fault so disconnected wiring can be repaired. Saves validate the new settings; failures restore the in-memory values and preserve the prior file.
+
+Persistence explicitly flushes buffered writes before closing and renaming temporary files. OpenOS file close may return no values on success; a missing success boolean is not an error. Reported flush/close failures prevent replacing installed settings or clearing the ritual journal.
 
 ### Identity and NBT
 
@@ -118,7 +120,7 @@ python3 packages/meteor/tools/import_catalog.py /path/to/GT-New-Horizons-Modpack
 cmp packages/meteor/lib/meteor/catalog.lua /tmp/catalog.lua
 ```
 
-Observed verification: **30 deterministic behavioural tests**, Lua 5.2 syntax checks, reproducible catalogue generation, and host-side runs of the actual TUI/application entry point and installed launcher. The automation smoke configured exact-NBT item and untagged fluid membership mappings, displayed absent targets as zero, selected an active policy and meteor, persisted settings, and manually ran ritual debit/two drilling plants/idle-HIGH filler through clean journal completion. Display smoke runs launched with an already-active **160×50** display and an initial **80×25** display, rendered the 160×50 dashboard, exercised the menu and quit confirmation, and restored the original resolution and depth. No live Minecraft instance or OC devices were available; installation wiring must be commissioned in-game.
+Observed verification: **34 deterministic behavioural tests**, Lua 5.2 syntax checks, reproducible catalogue generation, and host-side runs of the actual TUI/application entry point and installed launcher. Automation and display smokes covered exact-NBT item/fluid mappings, absent targets, policies, ritual debit/two plants/idle-HIGH filler, already-active 160×50 and initial 80×25 displays, and display restoration. A native-I/O smoke executed the pinned OpenOS buffer/full-buffer source over a simulated filesystem whose raw close returns no values: Tab back/cancel, Backspace editing, TUI config save/reload, complete ritual journal write/clear, and OPPM registration preserving existing repositories all passed. Regression tests also cover failed flush/close preserving installed config and failed journal flush retaining interrupted-cycle intent. No live Minecraft instance or OC devices were available; installation wiring must be commissioned in-game.
 
 Integration sources:
 
@@ -128,3 +130,5 @@ Integration sources:
 - [OC: ME interface configuration](https://github.com/GTNewHorizons/OpenComputers/blob/1e4559ff5f2443695cb28c7cdc9fba87219a862b/src/main/scala/li/cil/oc/integration/appeng/internal/InterfaceEnvironmentBase.scala)
 - [OC: Tier III screen dimensions](https://github.com/GTNewHorizons/OpenComputers/blob/1e4559ff5f2443695cb28c7cdc9fba87219a862b/src/main/scala/li/cil/oc/Settings.scala#L528)
 - [OC: resolution changed/not-changed return contract](https://github.com/GTNewHorizons/OpenComputers/blob/1e4559ff5f2443695cb28c7cdc9fba87219a862b/src/main/scala/li/cil/oc/server/component/GraphicsCard.scala#L403-L421)
+- [OC: GUI key forwarding excludes Esc](https://github.com/GTNewHorizons/OpenComputers/blob/1e4559ff5f2443695cb28c7cdc9fba87219a862b/src/main/scala/li/cil/oc/client/gui/traits/InputBuffer.scala#L79-L85)
+- [OpenOS: buffered close and explicit flush](https://github.com/GTNewHorizons/OpenComputers/blob/1e4559ff5f2443695cb28c7cdc9fba87219a862b/src/main/resources/assets/opencomputers/loot/openos/lib/buffer.lua#L33-L59)

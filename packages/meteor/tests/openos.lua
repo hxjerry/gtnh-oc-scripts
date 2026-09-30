@@ -79,7 +79,7 @@ function M.install()
     if reading and files[path] == nil then return nil, "not found" end
     if not reading and not directories[fs.path(path)] then return nil, "parent missing" end
     if not reading then files[path] = "" end
-    local position, closed = 1, false
+    local position, closed, pending = 1, false, ""
     return {
       read = function(_, count)
         assert(not closed)
@@ -90,8 +90,21 @@ function M.install()
         position = position + #result
         return result
       end,
-      write = function(self, text) assert(not closed); files[path] = files[path] .. text; return self end,
-      close = function() closed = true; return true end,
+      write = function(self, text) assert(not closed); pending = pending .. text; return self end,
+      flush = function(self)
+        assert(not closed)
+        local text = pending
+        pending = ""
+        if #text > 0 and fs.failFlushTo == path then return nil, "simulated flush failure" end
+        if #text > 0 then files[path] = files[path] .. text end
+        return self
+      end,
+      close = function(self)
+        self:flush() -- OpenOS close ignores the flush result.
+        closed = true
+        if fs.failCloseTo == path then return nil, "simulated close failure" end
+        -- OC's underlying filesystem close returns no value on success.
+      end,
     }
   end
   function fs.open(path, mode)

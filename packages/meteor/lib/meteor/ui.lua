@@ -5,7 +5,7 @@ local unicode = require("unicode")
 
 local M = {}
 local WIDTH, HEIGHT = 160, 50
-local KEY = { esc = 1, enter = 28, backspace = 14, tab = 15, up = 200, down = 208, left = 203, right = 205, pageup = 201, pagedown = 209, home = 199, finish = 207 }
+local KEY = { enter = 28, backspace = 14, tab = 15, up = 200, down = 208, left = 203, right = 205, pageup = 201, pagedown = 209, home = 199, finish = 207 }
 local COLORS = { bg = 0x101820, panel = 0x1B2935, white = 0xE8EEF2, muted = 0x8DA2B0, cyan = 0x53D8D1, green = 0x7DE38D, yellow = 0xF1C75B, red = 0xFF7272, blue = 0x76A9FA }
 local PAGE_SIZE = 18
 
@@ -131,7 +131,7 @@ function M.new(gpu, config, catalog, callbacks)
 
   function self:footer(text)
     self:put(1, HEIGHT - 1, string.rep("─", WIDTH), COLORS.muted)
-    self:put(2, HEIGHT, text or "↑↓ select   Enter open   Esc back   / filter   PgUp/PgDn page", COLORS.muted)
+    self:put(2, HEIGHT, text or "↑↓ select   Enter open   Tab back   / filter   PgUp/PgDn page", COLORS.muted)
   end
 
   function self:notice()
@@ -536,7 +536,7 @@ function M.new(gpu, config, catalog, callbacks)
       self:put(2, line, prefix .. entries[index].label, color)
     end
     self:put(2, 27, string.format("%d entries   page %d/%d", #entries, page, totalPages), COLORS.muted)
-    self:footer("↑↓ select  Enter open  / filter  PgUp/PgDn page  Esc back  D remove (mapping)")
+    self:footer("↑↓ select  Enter open  / filter  PgUp/PgDn page  Tab back  D remove (mapping)")
   end
 
   function self:drawHome()
@@ -604,8 +604,8 @@ function M.new(gpu, config, catalog, callbacks)
     local line = "Value: " .. prompt.text .. "_"
     self:put(3, 7, line, COLORS.yellow)
     self:put(3, 9, "Type a value, Backspace deletes, clipboard paste supported.", COLORS.muted)
-    self:put(3, 10, "Enter accepts   Esc cancels", COLORS.muted)
-    self:footer("Enter accept   Esc cancel   Backspace delete")
+    self:put(3, 10, "Enter accepts   Tab cancels", COLORS.muted)
+    self:footer("Enter accept   Tab cancel   Backspace delete")
   end
 
   function self:drawConfirm()
@@ -619,7 +619,7 @@ function M.new(gpu, config, catalog, callbacks)
     else
       self:put(3, 9, "[Yes]   [No]", COLORS.cyan)
     end
-    self:footer("←/→ choose   Enter confirm   Esc cancel")
+    self:footer("←/→ choose   Enter confirm   Tab cancel")
   end
 
   function self:draw(view)
@@ -711,7 +711,7 @@ function M.new(gpu, config, catalog, callbacks)
   function self:keyEvent(event)
     local charCode, keyCode = event[3], event[4]
     if self.screen == "prompt" then
-      if keyCode == KEY.esc then self:setScreen(self.prompt.priorScreen); return end
+      if keyCode == KEY.tab then self:setScreen(self.prompt.priorScreen); return end
       if keyCode == KEY.enter then self:confirmPrompt(); return end
       if keyCode == KEY.backspace then
         local text = self.prompt.text
@@ -725,7 +725,7 @@ function M.new(gpu, config, catalog, callbacks)
       return
     end
     if self.screen == "confirm" then
-      if keyCode == KEY.esc then self.confirmAction = nil; self:setScreen("home")
+      if keyCode == KEY.tab then self.confirmAction = nil; self:setScreen("home")
       elseif keyCode == KEY.left or keyCode == KEY.right then self.selected = self.selected == 1 and 2 or 1
       elseif keyCode == KEY.enter then self:activate() end
       return
@@ -736,7 +736,7 @@ function M.new(gpu, config, catalog, callbacks)
       self.detailOrePage = math.max(0, math.min(maxPage, (self.detailOrePage or 0) + (keyCode == KEY.pageup and -14 or 14)))
       return
     end
-    if keyCode == KEY.esc then
+    if keyCode == KEY.tab then
       if self.screen == "home" then self:setScreen("menu")
       elseif self.screen == "menu" then self:setScreen("home")
       elseif self.screen == "mapping" then self:setScreen("ores")

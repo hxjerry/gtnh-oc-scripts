@@ -339,6 +339,26 @@ test("native-resolution T3 launch renders products and keeps menu interaction us
   assert(width == 160 and height == 50 and gpu.getDepth() == 8)
 end)
 
+test("Tab cancels edited values and quit confirmation without changing settings", function()
+  local config = configModule.defaults()
+  local reserve = config.reserveLP
+  local ui = require("meteor.ui").new(openos.gpu(), config, {recipes = {recipe}})
+  ui:setScreen("settings")
+  ui:openPrompt("settings", "reserveLP", "1234", "number")
+  ui:handle({"key_down", "keyboard", 0, 14})
+  assert(ui.prompt.text == "123")
+  ui:handle({"key_down", "keyboard", 9, 15})
+  assert(ui.screen == "settings" and config.reserveLP == reserve)
+  ui:handle({"key_down", "keyboard", 9, 15})
+  assert(ui.screen == "menu")
+  ui:handle({"key_down", "keyboard", 9, 15})
+  ui:handle({"key_down", "keyboard", 113, 0})
+  assert(ui.screen == "confirm")
+  ui:handle({"key_down", "keyboard", 9, 15})
+  assert(ui.screen == "home" and ui.confirmAction == nil and not ui.closed)
+  ui:close()
+end)
+
 test("wiring cannot feed enable back as completion or mix routed inputs", function()
   local config = configModule.defaults()
   config.hardware.fillerInSide = config.hardware.fillerOutSide
@@ -368,6 +388,29 @@ test("failed config replacement preserves prior policies", function()
   local restored = configModule.load(path)
   assert(restored.reserveLP == previous.reserveLP)
 end)
+test("failed config flush preserves the installed settings", function()
+  local path = "/etc/meteor/flush-error.cfg"
+  local config = configModule.defaults()
+  config.reserveLP = 123456
+  configModule.save(path, config)
+  config.reserveLP = 654321
+  runtime.fs.failFlushTo = path .. ".tmp"
+  raises(function() configModule.save(path, config) end)
+  runtime.fs.failFlushTo = nil
+  assert(configModule.load(path).reserveLP == 123456)
+end)
+test("explicit close failure prevents config replacement", function()
+  local path = "/etc/meteor/close-error.cfg"
+  local config = configModule.defaults()
+  config.reserveLP = 123456
+  configModule.save(path, config)
+  config.reserveLP = 654321
+  runtime.fs.failCloseTo = path .. ".tmp"
+  raises(function() configModule.save(path, config) end)
+  runtime.fs.failCloseTo = nil
+  assert(configModule.load(path).reserveLP == 123456)
+end)
+
 test("journal restart latches dirty intent and clears on acknowledgement", function()
   local path = "/etc/meteor/state"
   local journal, dirty = require("meteor.journal").open(path)
@@ -382,6 +425,19 @@ test("journal restart latches dirty intent and clears on acknowledgement", funct
   local _, uncertain = require("meteor.journal").open(path)
   assert(uncertain)
 end)
+test("failed journal flush cannot clear interrupted-cycle intent", function()
+  local path = "/etc/meteor/flush-error-state"
+  local save = require("meteor.journal").open(path)
+  save(true, "iron")
+  runtime.fs.failFlushTo = path .. ".tmp"
+  raises(function() save(false) end)
+  runtime.fs.failFlushTo = nil
+  local state = package.loaded.serialization.unserialize(runtime.files[path])
+  assert(state.dirty and state.recipe == "iron")
+  local _, interrupted = require("meteor.journal").open(path)
+  assert(interrupted)
+end)
+
 runtime.restore()
 
 print(string.format("%d behavioural tests passed", total))

@@ -22,6 +22,9 @@ settings.repos[repository] = packages
 local tmp = path .. ".meteor.tmp"
 local file = assert(io.open(tmp, "wb"))
 assert(file:write(serialization.serialize(settings)))
-assert(file:close())
+local flushed, flushReason = file:flush()
+local closed, closeReason = file:close()
+assert(flushed, "Could not flush OPPM settings: " .. tostring(flushReason))
+assert(closed ~= false and closeReason == nil, "Could not close OPPM settings: " .. tostring(closeReason))
 assert(filesystem.rename(tmp, path), "Could not save OPPM settings; original retained")
 print("Registered " .. repository .. ". Run: oppm install meteor")

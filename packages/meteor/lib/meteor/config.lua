@@ -126,7 +126,7 @@ local function readFile(path)
   local contents, readReason = file:read("*a")
   local closed, closeReason = file:close()
   if contents == nil then error("cannot read config " .. path .. ": " .. tostring(readReason), 2) end
-  if closed == nil then error("cannot close config " .. path .. ": " .. tostring(closeReason), 2) end
+  if closed == false or closeReason ~= nil then error("cannot close config " .. path .. ": " .. tostring(closeReason), 2) end
   return contents
 end
 
@@ -148,8 +148,10 @@ local function writeFile(path, contents)
     file:close()
     error("cannot write temporary config " .. path .. ": " .. tostring(writeReason), 2)
   end
+  local flushed, flushReason = file:flush()
   local closed, closeReason = file:close()
-  if closed == nil then error("cannot close temporary config " .. path .. ": " .. tostring(closeReason), 2) end
+  if not flushed then error("cannot flush temporary config " .. path .. ": " .. tostring(flushReason), 2) end
+  if closed == false or closeReason ~= nil then error("cannot close temporary config " .. path .. ": " .. tostring(closeReason), 2) end
 end
 
 function M.save(path, config)
