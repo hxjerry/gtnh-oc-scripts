@@ -30,6 +30,21 @@ local function slice(value, first, last)
   local ok, result = pcall(unicode.sub, tostring(value or ""), first, last)
   return ok and result or tostring(value or ""):sub(first, last)
 end
+local function clip(text, width)
+  if size(text) <= width then return text end
+  -- OC wtrunc can read past short strings and split UTF-16 surrogate pairs.
+  -- Search complete code-point prefixes instead, bounded by display width.
+  local first, last = 0, unicode.len(text)
+  while first < last do
+    local middle = math.floor((first + last + 1) / 2)
+    if size(unicode.sub(text, 1, middle)) <= width then
+      first = middle
+    else
+      last = middle - 1
+    end
+  end
+  return unicode.sub(text, 1, first)
+end
 
 
 local function sourceOres(catalog)
@@ -110,10 +125,7 @@ function M.new(gpu, config, catalog, callbacks)
     text = tostring(text or "")
     if x < 1 then text = slice(text, 2 - x); x = 1 end
     local max = WIDTH - x + 1
-    if size(text) > max then
-      local truncated = unicode.wtrunc and unicode.wtrunc(text, max) or slice(text, 1, max)
-      text = truncated
-    end
+    text = clip(text, max)
     if color then self.gpu.setForeground(color) end
     if background then self.gpu.setBackground(background) end
     self.gpu.set(x, y, text)
@@ -571,11 +583,11 @@ function M.new(gpu, config, catalog, callbacks)
       local label = tostring(row.product.label or row.product.name) .. " [" .. (row.product.kind == "fluid" and "fluid" or tostring(row.product.damage)) .. (row.product.hasTag and ", NBT " .. identity.fingerprint(row.product) or "") .. "]"
       local policy = row.policy or {}
       self:put(2, line, prefix, COLORS.cyan)
-      self:put(COLUMN.item, line, unicode.wtrunc(label, COLUMN.current - COLUMN.item - 3), COLORS.white)
+      self:put(COLUMN.item, line, clip(label, COLUMN.current - COLUMN.item - 3), COLORS.white)
       self:put(COLUMN.current, line, formatAmount(row.stock, row.product), COLORS.white)
       self:put(COLUMN.target, line, formatAmount(policy.target or 0, row.product), COLORS.white)
       self:put(COLUMN.active, line, policy.active and "ON" or "off", policy.active and COLORS.green or COLORS.muted)
-      self:put(COLUMN.meteor, line, unicode.wtrunc(tostring(policy.meteor or "-"), COLUMN.craft - COLUMN.meteor - 3), COLORS.white)
+      self:put(COLUMN.meteor, line, clip(tostring(policy.meteor or "-"), COLUMN.craft - COLUMN.meteor - 3), COLORS.white)
       self:put(COLUMN.craft, line, policy.craft and "yes" or "no", COLORS.white)
     end
     self:put(2, 28, "Rows " .. #visible .. "   page " .. pages .. "  |  Filter: " .. (self.filters.home or "") .. " (/ to edit)", COLORS.muted)

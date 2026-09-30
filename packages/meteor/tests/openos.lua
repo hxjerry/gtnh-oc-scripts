@@ -38,15 +38,6 @@ M.unicode = {
     return table.concat(out)
   end,
   wlen = function(text) local n = 0; for _, char in ipairs(chars(text)) do n = n + charWidth(char) end; return n end,
-  wtrunc = function(text, width)
-    local out, n = {}, 0
-    for _, char in ipairs(chars(text)) do
-      n = n + charWidth(char)
-      if n > width then break end
-      out[#out + 1] = char
-    end
-    return table.concat(out)
-  end,
   char = function(n)
     if n < 128 then return string.char(n) end
     if n < 2048 then return string.char(192 + math.floor(n / 64), 128 + n % 64) end

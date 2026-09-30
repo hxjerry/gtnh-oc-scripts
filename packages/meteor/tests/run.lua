@@ -354,6 +354,40 @@ test("native-resolution T3 launch renders products and keeps menu interaction us
   assert(width == 160 and height == 50 and gpu.getDepth() == 8)
 end)
 
+test("dashboard labels fit their columns without losing fitting characters", function()
+  local gpu = openos.gpu()
+  local ui = require("meteor.ui").new(gpu, configModule.defaults(), {recipes = {recipe}})
+  local cases = {
+    {label = "Iron Dust", damage = 2032, expected = "Iron Dust [2032]", meteor = "iron", expectedMeteor = "iron"},
+    {label = string.rep("A", 56), expected = string.rep("A", 56) .. " [0]",
+      meteor = string.rep("M", 33), expectedMeteor = string.rep("M", 33)},
+    {label = string.rep("L", 65), expected = string.rep("L", 60),
+      meteor = string.rep("N", 40), expectedMeteor = string.rep("N", 33)},
+    {label = string.rep("A", 59) .. "𝄞", expected = string.rep("A", 59) .. "𝄞",
+      meteor = "iron", expectedMeteor = "iron"},
+    {label = string.rep("精", 29) .. "A精", expected = string.rep("精", 29) .. "A",
+      meteor = "iron", expectedMeteor = "iron"},
+  }
+  for _, case in ipairs(cases) do
+    local descriptor = world.item("mod:product", case.damage)
+    descriptor.label = case.label
+    ui:draw({mode = "stopped", state = "IDLE", rows = {{
+      key = identity.key(descriptor), product = descriptor, stock = 987,
+      policy = {target = 1000, active = true, meteor = case.meteor, craft = true},
+    }}})
+    local lines = {}
+    for line in (gpu.render() .. "\n"):gmatch("(.-)\n") do lines[#lines + 1] = line end
+    local rendered = openos.unicode.sub(lines[9], 4, 3 + openos.unicode.len(case.expected))
+    assert(rendered == case.expected)
+    local headerStart = assert(lines[7]:find("Current", 1, true))
+    local stockStart = assert(lines[9]:find("987 items", 1, true))
+    assert(openos.unicode.wlen(lines[7]:sub(1, headerStart - 1)) ==
+      openos.unicode.wlen(lines[9]:sub(1, stockStart - 1)))
+    assert(lines[9]:find(case.expectedMeteor .. string.rep(" ", 36 - #case.expectedMeteor) .. "yes", 1, true))
+  end
+  ui:close()
+end)
+
 test("Tab cancels edited values and quit confirmation without changing settings", function()
   local config = configModule.defaults()
   local reserve = config.reserveLP
