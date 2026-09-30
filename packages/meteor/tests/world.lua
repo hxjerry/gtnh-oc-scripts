@@ -35,6 +35,9 @@ function M.new(config, recipe)
   function w:advance(seconds)
     self.time = self.time + seconds
     for _, job in ipairs(self.jobs) do
+      if job.computing and self.time >= job.submitAt then
+        job.computing, job.linked = false, not job.failed
+      end
       if not job.done and not job.failed and not job.canceled and self.time >= job.at then
         job.done = true
         self:add(job.descriptor, (self.stock[identity.key(job.descriptor)] or 0) + 1)
@@ -77,6 +80,10 @@ function M.new(config, recipe)
     if self.done ~= oldNoWork then
       self.events[#self.events + 1] = {"redstone_changed", "filler", h.fillerInSide, oldNoWork and 15 or 0, self.done and 15 or 0}
     end
+  end
+  function w:saveCraftStatuses()
+    -- Pinned OC CraftingStatus.save mutates failed, not the actual ME job.
+    for _, job in ipairs(self.jobs) do job.savedFailure = not job.linked or not job.done end
   end
   local function filtered(d, f)
     for k, v in pairs(f or {}) do if d[k] ~= v then return false end end
@@ -131,11 +138,24 @@ function M.new(config, recipe)
     return {{getStack = function() return descriptor end, request = function(amount)
       assert(amount == 1)
       w.requests = w.requests + 1
-      local state = {at = w.time + 2, descriptor = descriptor}
+      local state = {submitAt = w.time + 0.5, at = w.time + 2, descriptor = descriptor, computing = true}
       w.jobs[#w.jobs + 1] = state
-      return {hasFailed = function() return state.failed or false, "simulated failure" end,
-        isCanceled = function() return state.canceled or false end,
-        isDone = function() return state.done or false end}
+      local function failure()
+        return state.failed or state.savedFailure or false, state.failed and "request failed (missing resources)" or "no link"
+      end
+      return {hasFailed = failure,
+        isComputing = function() return state.computing end,
+        isCanceled = function()
+          if state.computing then return false, "computing" end
+          if state.linked then return state.canceled or false end
+          return failure()
+        end,
+        isDone = function()
+          if state.computing then return false, "computing" end
+          if state.linked then return state.done or false end
+          local failed, reason = failure()
+          return not failed, reason
+        end}
     end}}
   end
   local tp = {}

@@ -90,10 +90,14 @@ function Controller:inputTick()
   local input, now = self.input, self.clock()
   assert(now - input.started < self.config.inputTimeout, "Input timed out: " .. input.descriptor.name)
   if input.job then
-    local failed, why = input.job.hasFailed()
-    assert(not failed, "Autocraft failed: " .. tostring(why))
+    -- OC CraftingStatus.save mutates hasFailed for unfinished live jobs.
+    -- isCanceled follows the live link, and also reports rejected requests.
     local canceled, reason = input.job.isCanceled()
-    assert(not canceled, "Autocraft canceled: " .. tostring(reason))
+    if canceled then
+      local failed, why = input.job.hasFailed()
+      assert(not failed, "Autocraft failed: " .. tostring(why))
+      error("Autocraft canceled: " .. tostring(reason))
+    end
     local done = input.job.isDone()
     assert(done or now - input.craftAt < self.config.craftTimeout, "Autocraft timed out")
   end

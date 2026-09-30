@@ -145,6 +145,53 @@ test("canceled crafting cannot be retried into a ritual", function()
   assert(c.state == "FAULT" and w.requests == 1 and w.pulses == 0)
 end)
 
+test("saving computing and linked craft status never prevents exact input extraction", function()
+  local c, w, _, _, hw = setup({catalyst = false, craft = true})
+  w.stock[identity.key(recipe.focus)] = 0
+  c:run("iron", false)
+  tick(c, w, 0.3)
+  local job = assert(w.jobs[1])
+  assert(job.computing and not job.linked)
+  w:saveCraftStatuses()
+  local failed, reason = c.input.job.hasFailed()
+  assert(failed and reason == "no link")
+  tick(c, w, 0.5)
+  assert(c.state == "INPUT" and job.linked and not job.done and #w.transfers == 0)
+  w:saveCraftStatuses()
+  failed, reason = c.input.job.hasFailed()
+  assert(failed and reason == "no link" and not c.input.job.isCanceled())
+  untilState(c, w, "IDLE")
+  assert(w.requests == 1 and w.pulses == 1 and #w.transfers == 1)
+  assert(identity.same(w.transfers[1].descriptor, recipe.focus) and not hw.ownsSlot)
+end)
+
+test("rejected autocraft faults before extraction even if another source stocks the input", function()
+  local c, w = setup({catalyst = false, craft = true})
+  w.stock[identity.key(recipe.focus)] = 0
+  c:run("iron", false)
+  tick(c, w, 0.3)
+  local job = assert(w.jobs[1])
+  job.failed, job.computing = true, false -- OC fail() ends computing atomically.
+  w:add(recipe.focus, 1)
+  tick(c, w, 1)
+  assert(c.state == "FAULT" and c.lastError:find("Autocraft failed", 1, true))
+  assert(w.requests == 1 and #w.transfers == 0 and w.pulses == 0)
+end)
+
+test("saved active autocraft still times out without requesting another job", function()
+  local c, w = setup({catalyst = false, craft = true})
+  w.stock[identity.key(recipe.focus)] = 0
+  c:run("iron", false)
+  tick(c, w, 0.8)
+  local job = assert(w.jobs[1])
+  job.at = math.huge
+  assert(job.linked)
+  w:saveCraftStatuses()
+  tick(c, w, 9)
+  assert(c.state == "FAULT" and c.lastError:find("Autocraft timed out", 1, true))
+  assert(w.requests == 1 and #w.transfers == 0 and w.pulses == 0)
+end)
+
 test("enabled but idle drilling plants never authorize filler", function()
   local c, w = setup({catalyst = false})
   w.completeMining = false
