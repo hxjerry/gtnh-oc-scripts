@@ -51,6 +51,7 @@ local function descriptor(value, path)
   elseif value.tag ~= nil then
     fail(path .. ".tag must be absent when hasTag is false")
   end
+  if value.kind == "fluid" and value.hasTag then fail(path .. " fluid identity is registry-name-only") end
   if value.label ~= nil and type(value.label) ~= "string" then fail(path .. ".label must be text") end
 end
 

@@ -360,55 +360,62 @@ test("catalogue nested data cannot be modified", function()
   raises(function() cat.recipes[1] = {} end, "immutable")
 end)
 
-test("ME search matches both product kinds without merging metadata or NBT variants", function()
-  local _, w, _, _, hw = setup()
-  local a, b = world.item("mod:metal", 7, "\0a"), world.item("mod:metal", 7, "\0b")
-  a.label, b.label = "Iron Dust", "Iron Dust"
-  w:add(a, 3); w:add(b, 4)
-  local fluid = {kind = "fluid", name = "molten.iron", label = "Molten Iron", hasTag = false}
-  w.fluids = {{name = fluid.name, label = fluid.label, hasTag = false, amount = 144}}
-  local bad = world.item("mod:broken", 0, "\0hidden")
-  bad.label = "Iron with hidden NBT"
-  w:add(bad, 1); w.items[identity.key(bad)].tag = nil
-  local rows, info = hw:searchProducts("  IRON  ")
-  local keys = {}
-  for _, row in ipairs(rows) do keys[identity.key(row)] = true end
-  assert(#rows == 3 and keys[identity.key(a)] and keys[identity.key(b)] and keys[identity.key(fluid)])
-  assert(info.skipped == 1 and info.firstError:find("NBT unavailable", 1, true))
-  assert(not info.itemTruncated and not info.fluidTruncated)
-  rows = hw:searchProducts("molten.iron")
-  assert(#rows == 1 and identity.same(rows[1], fluid))
-  rows = hw:searchProducts("Iron.*")
-  assert(#rows == 0) -- User input is literal, never a Lua pattern.
+test("physical item samples retain metadata and NBT without ME access", function()
+  local _, w, cfg = setup()
+  local a = world.item("mod:metal", 7, "\0\255a")
+  local b = world.item("mod:metal", 7, "\0\255b")
+  local otherMeta = world.item("mod:metal", 8, a.tag)
+  w.sampleSlots[0] = {[2] = {stack = a}, [3] = {stack = b}, [4] = {stack = otherMeta}}
+  w.networkDown = true
+  cfg.hardware.me, cfg.hardware.ritual, cfg.hardware.filler = "", "", ""
+  local hw = hardware.new(w.component, cfg)
+  local first, second, third = hw:sampleProduct(0, 2), hw:sampleProduct(0, 3), hw:sampleProduct(0, 4)
+  assert(identity.same(first, a) and identity.same(second, b) and identity.same(third, otherMeta))
+  assert(not identity.same(first, second) and not identity.same(first, third))
+  assert(identity.same(w.sampleSlots[0][2].stack, a))
 end)
 
-test("ME search caps each kind and stops consuming the item stream at the limit", function()
-  local _, w, _, _, hw = setup()
-  w.proxies.me.getItemsInNetwork = function() error("Bulk items exceed OC RAM") end
-  w.proxies.me.allItems = function()
-    local index = 0
-    return setmetatable({}, {__call = function()
-      index = index + 1
-      assert(index <= 1051, "Search consumed an unbounded item stream")
-      local stack = world.item("mod:meta", index, "\0exact" .. index)
-      stack.label = index <= 1000 and "Unrelated Ore" or "Iron Dust"
-      return stack
-    end})
+test("filled containers register fluid identity rather than the container item", function()
+  local _, w, cfg = setup()
+  local cell = world.item("mod:cell", 1, "\0container")
+  local bucket = world.item("other:bucket", 12)
+  w.sampleSlots[0] = {
+    [2] = {stack = cell, fluid = {name = "molten.iron", label = "Molten Iron", amount = 144, hasTag = true}},
+    [3] = {stack = bucket, fluid = {name = "molten.iron", label = "Iron", amount = 1000, id = 99}},
+    [4] = {stack = cell, fluid = {name = "molten.copper", amount = 144}},
+  }
+  local hw = hardware.new(w.component, cfg)
+  local first, second, third = hw:sampleProduct(0, 2), hw:sampleProduct(0, 3), hw:sampleProduct(0, 4)
+  assert(first.kind == "fluid" and identity.same(first, second))
+  assert(not identity.same(first, third) and not identity.same(first, cell))
+  local normalized = identity.fromStack({kind = "fluid", name = first.name, hasTag = true,
+    tag = "\0ignored", damage = 123, id = 1, amount = 999})
+  assert(identity.same(first, normalized))
+  w.fluids = {{name = first.name, amount = 288, hasTag = false}}
+  hw:connect()
+  assert(hw:stock({{key = identity.key(first), product = first}})[identity.key(first)] == 288)
+end)
+
+test("sampling rejects empty slots, invalid bounds and unreadable items without fabricating products", function()
+  local _, w, cfg = setup()
+  local hw = hardware.new(w.component, cfg)
+  raises(function() hw:sampleProduct(4, 1) end)
+  for _, location in ipairs({{-1, 1}, {6, 1}, {0.5, 1}, {0, 0}, {0, 10}, {0, 1.5}}) do
+    raises(function() hw:sampleProduct(location[1], location[2]) end)
   end
-  for index = 1, 50 do
-    w.fluids[index] = {name = "molten.iron." .. index, label = "Iron Fluid " .. index, hasTag = false, amount = 144}
-  end
-  local rows, info = hw:searchProducts("iron")
-  local counts = {item = 0, fluid = 0}
-  for _, row in ipairs(rows) do
-    counts[row.kind] = counts[row.kind] + 1
-    if row.kind == "item" then assert(row.tag == "\0exact" .. row.damage) end
-  end
-  assert(counts.item == 50 and counts.fluid == 50 and #rows == 100)
-  assert(info.itemTruncated and not info.fluidTruncated and info.skipped == 0)
-  w.fluids[51] = {name = "molten.iron.51", label = "Iron Fluid 51", hasTag = false, amount = 144}
-  rows, info = hw:searchProducts("iron")
-  assert(#rows == 100 and info.itemTruncated and info.fluidTruncated)
+  local hidden = world.item("mod:hidden", 4, "\0secret")
+  hidden.tag = nil
+  w.sampleSlots[0] = {[2] = {stack = hidden}}
+  raises(function() hw:sampleProduct(0, 2) end, "NBT unavailable")
+  local emptyCell = world.item("mod:empty_cell", 0)
+  w.sampleSlots[0][2] = {stack = emptyCell}
+  w.proxies.tp.getFluidInContainerInSlot = function() return nil end
+  assert(identity.same(hw:sampleProduct(0, 2), emptyCell))
+  w.proxies.tp.getFluidInContainerInSlot = function() return nil, "container inspection failed" end
+  raises(function() hw:sampleProduct(0, 2) end, "container inspection failed")
+  w.proxies.tp.getStackInSlot = function() return nil, "inventory inspection failed" end
+  raises(function() hw:sampleProduct(0, 2) end, "inventory inspection failed")
+  assert(identity.same(w.sampleSlots[0][2].stack, emptyCell))
 end)
 
 test("monitoring an added product never loads unrelated ME inventory", function()
@@ -469,95 +476,108 @@ test("native-resolution T3 launch renders products and keeps menu interaction us
   local width, height = gpu.getResolution()
   assert(width == 160 and height == 50 and gpu.getDepth() == 8)
 end)
-
-test("product picker requires a term and saves items and fluids from one shared search", function()
+test("slot picker saves exact items and automatically registers contained fluid", function()
   local cfg = configModule.defaults()
-  local cat = {recipes = {recipe}}
   local w = world.new(cfg, recipe)
   local tagged = world.item("mod:metal", 2032, "\0\255iron")
-  tagged.label = "Iron Dust"
-  w:add(tagged, 3)
+  local cell = world.item("mod:cell", 1, "\0hidden")
+  cell.tag = nil
   local fluid = {kind = "fluid", name = "molten.iron", label = "Molten Iron", hasTag = false}
-  w.fluids = {{name = fluid.name, label = fluid.label, hasTag = false, amount = 144}}
-  local hw = hardware.new(w.component, cfg):connect()
-  local gpu = openos.gpu()
-  local path = "/etc/meteor/search-picker.cfg"
-  local ui = require("meteor.ui").new(gpu, cfg, cat, {
-    searchProducts = function(query, pause) return hw:searchProducts(query, pause) end,
-    save = function() configModule.save(path, cfg); return true end,
+  w.sampleSlots[0] = {[2] = {stack = tagged}, [3] = {stack = cell,
+    fluid = {name = fluid.name, label = fluid.label, amount = 144}}}
+  w.networkDown = true
+  local hw = hardware.new(w.component, cfg)
+  local path = "/etc/meteor/sample-picker.cfg"
+  local ui = require("meteor.ui").new(openos.gpu(), cfg, {recipes = {recipe}}, {
+    sampleProduct = function(side, slot) return hw:sampleProduct(side, slot) end,
+    save = function() return configModule.save(path, cfg) end,
   })
   ui.pendingOre = {key = "OREDICT:oreIron", label = "Iron Ore"}
   ui:setScreen("mapping")
-  w.networkDown = true
   ui:handle({"key_down", "keyboard", 13, 28})
-  assert(ui.screen == "prompt" and gpu.render():find("SEARCH ME PRODUCTS", 1, true))
-  ui:handle({"clipboard", "keyboard", "   "})
+  ui:handle({"key_down", "keyboard", 0, 208})
   ui:handle({"key_down", "keyboard", 13, 28})
-  assert(ui.screen == "prompt" and ui.message:find("nonblank", 1, true))
-  ui:handle({"key_down", "keyboard", 9, 15})
-  assert(ui.screen == "mapping")
-  w.networkDown = false
+  ui:handle({"key_down", "keyboard", 0, 14})
+  ui:handle({"clipboard", "keyboard", "2"})
+  ui:handle({"key_down", "keyboard", 13, 28})
+  ui:handle({"key_down", "keyboard", 0, 208})
+  ui:handle({"key_down", "keyboard", 0, 208})
+  ui:handle({"key_down", "keyboard", 13, 28})
+  assert(ui.screen == "mapping" and identity.same(cfg.oreProducts["OREDICT:oreIron"][1], tagged))
   ui:handle({"key_down", "keyboard", 97, 0})
-  ui:handle({"clipboard", "keyboard", "IRON"})
+  ui:handle({"touch", "screen", 5, 6, 0})
+  ui:handle({"key_down", "keyboard", 0, 14})
+  ui:handle({"clipboard", "keyboard", "3"})
   ui:handle({"key_down", "keyboard", 13, 28})
-  ui:tickSearch(); ui:draw()
-  assert(ui.screen == "browse" and #ui:entries() == 2)
-  assert(gpu.render():find("Iron Dust", 1, true) and gpu.render():find("Molten Iron", 1, true))
-  for _, desired in ipairs({tagged, fluid}) do
-    if ui.screen == "mapping" then
-      ui:handle({"key_down", "keyboard", 97, 0})
-      assert(ui.prompt.text == "IRON")
-      ui:handle({"key_down", "keyboard", 13, 28})
-      ui:tickSearch()
-    end
-    for index, row in ipairs(ui.browseRows) do if identity.same(row, desired) then ui.selected = index end end
-    ui:handle({"key_down", "keyboard", 13, 28})
-    assert(ui.screen == "mapping" and ui.browseRows == nil)
-  end
+  ui:handle({"touch", "screen", 5, 7, 0})
   local saved = configModule.load(path).oreProducts["OREDICT:oreIron"]
   assert(#saved == 2 and identity.same(saved[1], tagged) and identity.same(saved[2], fluid))
+  ui:handle({"key_down", "keyboard", 97, 0})
+  ui.selected = 3
+  ui:handle({"key_down", "keyboard", 13, 28})
+  assert(ui.screen == "sampling" and #cfg.oreProducts["OREDICT:oreIron"] == 2)
+  assert(#configModule.load(path).oreProducts["OREDICT:oreIron"] == 2)
+  ui:handle({"key_down", "keyboard", 9, 15})
+  assert(ui.screen == "mapping" and ui.pendingOre.key == "OREDICT:oreIron")
   ui:close()
 end)
 
-test("ME search can be canceled and failed replacement searches cannot expose stale products", function()
+test("sample cancellation and active automation cannot change ore mappings", function()
   local cfg = configModule.defaults()
   local w = world.new(cfg, recipe)
-  local target = world.item("mod:iron", 1)
-  w:add(target, 5)
-  local hw = hardware.new(w.component, cfg):connect()
+  w.sampleSlots[0] = {[2] = {stack = product}}
+  local hw = hardware.new(w.component, cfg)
   local ui = require("meteor.ui").new(openos.gpu(), cfg, {recipes = {recipe}}, {
-    searchProducts = function(query, pause) return hw:searchProducts(query, pause) end,
+    sampleProduct = function(side, slot) return hw:sampleProduct(side, slot) end,
   })
   ui.pendingOre = {key = "OREDICT:oreIron", label = "Iron Ore"}
-  ui:setScreen("mapping"); ui:beginProductSearch()
-  ui:handle({"clipboard", "keyboard", "iron"})
-  ui:handle({"key_down", "keyboard", 13, 28}); ui:tickSearch()
-  assert(ui.screen == "browse" and identity.same(ui.browseRows[1], target))
-  ui:handle({"key_down", "keyboard", 47, 0})
+  ui:setScreen("mapping")
+  ui:handle({"key_down", "keyboard", 97, 0})
+  ui:handle({"key_down", "keyboard", 13, 28})
+  ui:handle({"key_down", "keyboard", 0, 14})
+  ui:handle({"clipboard", "keyboard", "5"})
   ui:handle({"key_down", "keyboard", 9, 15})
-  assert(ui.screen == "browse" and identity.same(ui.browseRows[1], target))
-  ui:handle({"key_down", "keyboard", 47, 0})
-  w.networkDown = true
-  ui:handle({"key_down", "keyboard", 13, 28}); ui:tickSearch()
-  assert(ui.screen == "prompt" and ui.browseRows == nil and ui.message:find("ME disconnected", 1, true))
+  assert(ui.screen == "sampling" and ui.sampleSide == 0)
   ui:handle({"key_down", "keyboard", 9, 15})
-  w.networkDown = false
-  local consumed = 0
-  w.proxies.me.allItems = function()
-    return setmetatable({}, {__call = function()
-      consumed = consumed + 1
-      return world.item("mod:unrelated", consumed)
-    end})
-  end
-  ui:beginProductSearch()
-  ui:handle({"key_down", "keyboard", 13, 28}); ui:tickSearch(); ui:draw()
-  assert(ui.screen == "searching" and consumed > 0 and consumed < 100)
-  assert(ui.gpu.render():find("Tab cancels", 1, true))
-  local stoppedAt = consumed
-  ui:handle({"key_down", "keyboard", 9, 15}); ui:tickSearch()
-  assert(ui.screen == "mapping" and consumed == stoppedAt and ui.browseRows == nil)
+  assert(ui.screen == "mapping" and cfg.oreProducts["OREDICT:oreIron"] == nil)
+  ui:handle({"key_down", "keyboard", 97, 0})
+  ui.sampleSlot = 2
+  ui:draw({mode = "auto", state = "IDLE"})
+  ui.selected = 3
+  ui:handle({"key_down", "keyboard", 13, 28})
+  assert(ui.screen == "sampling" and cfg.oreProducts["OREDICT:oreIron"] == nil)
   ui:close()
 end)
+
+test("failed sample save restores prior mappings and permits a clean retry", function()
+  local cfg = configModule.defaults()
+  cfg.oreProducts["OREDICT:oreIron"] = {product}
+  local w = world.new(cfg, recipe)
+  local nextProduct = world.item(product.name, product.damage, "\0new")
+  w.sampleSlots[0] = {[2] = {stack = nextProduct}}
+  local hw = hardware.new(w.component, cfg)
+  local path = "/etc/meteor/sample-save-error.cfg"
+  configModule.save(path, cfg)
+  local ui = require("meteor.ui").new(openos.gpu(), cfg, {recipes = {recipe}}, {
+    sampleProduct = function(side, slot) return hw:sampleProduct(side, slot) end,
+    save = function() return configModule.save(path, cfg) end,
+  })
+  ui.pendingOre = {key = "OREDICT:oreIron", label = "Iron Ore"}
+  ui:setScreen("mapping")
+  ui:handle({"key_down", "keyboard", 97, 0})
+  ui.sampleSlot, ui.selected = 2, 3
+  runtime.fs.failFlushTo = path .. ".tmp"
+  ui:handle({"key_down", "keyboard", 13, 28})
+  runtime.fs.failFlushTo = nil
+  assert(ui.screen == "sampling" and #cfg.oreProducts["OREDICT:oreIron"] == 1)
+  assert(identity.same(cfg.oreProducts["OREDICT:oreIron"][1], product))
+  assert(#configModule.load(path).oreProducts["OREDICT:oreIron"] == 1)
+  ui:handle({"key_down", "keyboard", 13, 28})
+  local saved = configModule.load(path).oreProducts["OREDICT:oreIron"]
+  assert(ui.screen == "mapping" and #saved == 2 and identity.same(saved[2], nextProduct))
+  ui:close()
+end)
+
 
 test("dashboard labels fit their columns without losing fitting characters", function()
   local gpu = openos.gpu()
@@ -630,6 +650,26 @@ test("persistent metadata and binary NBT survive restart", function()
   local loaded = configModule.load("/etc/meteor/config.cfg")
   assert(identity.same(tagged, loaded.oreProducts.ore[1]))
   assert(loaded.policies[identity.key(tagged)].active)
+end)
+test("existing fluid policies survive registry-only sample registration", function()
+  local cfg = configModule.defaults()
+  local previous = {kind = "fluid", name = "molten.iron", label = "Molten Iron", hasTag = false}
+  local storedKey = "5:fluid11:molten.iron0:0:N"
+  cfg.oreProducts["OREDICT:oreIron"] = {previous}
+  cfg.policies[storedKey] = {active = true, target = 14400, meteor = "iron", craft = true}
+  configModule.save("/etc/meteor/fluid-policy.cfg", cfg)
+  cfg = configModule.load("/etc/meteor/fluid-policy.cfg")
+  local w = world.new(cfg, recipe)
+  w.sampleSlots[0] = {[2] = {stack = world.item("mod:cell", 1, "\0contents"),
+    fluid = {name = "molten.iron", amount = 1000}}}
+  cfg.oreProducts["OREDICT:oreIron"][1] = hardware.new(w.component, cfg):sampleProduct(0, 2)
+  configModule.save("/etc/meteor/fluid-policy.cfg", cfg)
+  local rows = model.aggregate(configModule.load("/etc/meteor/fluid-policy.cfg"), {recipes = {recipe}})
+  assert(#rows == 1 and rows[1].key == storedKey)
+  assert(rows[1].policy.active and rows[1].policy.target == 14400 and rows[1].policy.craft)
+  rows[1].stock = 1000
+  local selected = model.choose(rows)
+  assert(selected and selected.recipe == "iron" and selected.craft)
 end)
 test("failed config replacement preserves prior policies", function()
   local path = "/etc/meteor/config.cfg"

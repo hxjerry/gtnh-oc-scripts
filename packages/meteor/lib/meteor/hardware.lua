@@ -49,8 +49,8 @@ function Hardware:connect()
   self.ritual.setOutput(h.ritualSide, 0)
   self.filler = need(proxy(h.filler, "redstone"), {"setOutput", "getInput"}, "Filler redstone")
   self.filler.setOutput(h.fillerOutSide, 0)
-  self.me = need(proxy(h.me, "me_interface"), {"allItems", "getItemInNetwork", "getFluidInNetwork", "getItemsInNetwork", "getFluidsInNetwork", "getCraftables", "setInterfaceConfiguration", "getInterfaceConfiguration"}, "Block ME interface")
-  self.transposer = need(proxy(h.transposer, "transposer"), {"getStackInSlot", "getInventorySize", "transferItem"}, "Transposer")
+  self.me = need(proxy(h.me, "me_interface"), {"getItemInNetwork", "getFluidInNetwork", "getItemsInNetwork", "getCraftables", "setInterfaceConfiguration", "getInterfaceConfiguration"}, "Block ME interface")
+  self.transposer = need(proxy(h.transposer, "transposer"), {"getStackInSlot", "getInventorySize", "getFluidInContainerInSlot", "transferItem"}, "Transposer")
   for _, side in ipairs({h.sourceSide, h.orbSide, h.outputSide}) do
     assert(number(self.transposer.getInventorySize(side), "inventory size") > 0, "Missing inventory on side " .. side)
   end
@@ -85,56 +85,33 @@ function Hardware:safe()
   end
   return #errors == 0, table.concat(errors, "; ")
 end
-function Hardware:searchProducts(query, pause)
-  assert(self.me, "Configure and connect hardware first")
-  assert(type(query) == "string" and query:find("%S"), "Enter a search term")
-  query = query:match("^%s*(.-)%s*$"):lower()
-  local values, seen, counts = {}, {}, {item = 0, fluid = 0}
-  local info = {itemTruncated = false, fluidTruncated = false, skipped = 0}
-  local function take(stack, kind)
-    assert(type(stack) == "table", "ME returned an invalid stack")
-    if not tostring(stack.label or ""):lower():find(query, 1, true) and
-      not tostring(stack.name or ""):lower():find(query, 1, true) then return false end
-    local ok, descriptor = pcall(identity.fromStack, stack, kind)
-    if not ok then
-      info.skipped = info.skipped + 1
-      info.firstError = info.firstError or tostring(descriptor)
-      return false
-    end
-    local key = identity.key(descriptor)
-    if seen[key] then return false end
-    if counts[kind] == 50 then return true end
-    values[#values + 1], seen[key] = descriptor, true
-    counts[kind] = counts[kind] + 1
-    return false
+function Hardware:sampleProduct(side, slot)
+  assert(type(side) == "number" and side == side and side % 1 == 0 and side >= 0 and side <= 5,
+    "Invalid transposer side")
+  assert(type(slot) == "number" and slot == slot and slot % 1 == 0 and slot >= 1 and slot < math.huge,
+    "Invalid transposer slot")
+  local address = self.config.hardware.transposer
+  assert(type(address) == "string" and address ~= "", "Configure transposer address in Setup")
+  assert(self.component.type(address) == "transposer", "Missing transposer: " .. address)
+  local transposer = need(self.component.proxy(address),
+    {"getStackInSlot", "getInventorySize", "getFluidInContainerInSlot"}, "Transposer")
+  local size, sizeError = transposer.getInventorySize(side)
+  assert(sizeError == nil, "Inventory size read failed: " .. tostring(sizeError))
+  size = number(size, "inventory size")
+  assert(size > 0 and size % 1 == 0, "Missing inventory on side " .. side)
+  assert(slot <= size, "Sample slot outside inventory")
+  local stack, stackError = transposer.getStackInSlot(side, slot)
+  assert(stackError == nil, "Inventory read failed: " .. tostring(stackError))
+  assert(type(stack) == "table", "Sample slot is empty")
+  assert(number(stack.size, "sample stack size") > 0, "Sample slot is empty")
+  local fluid, fluidError = transposer.getFluidInContainerInSlot(side, slot)
+  if fluid ~= nil then
+    assert(fluidError == nil, "Container inspection failed: " .. tostring(fluidError))
+    return identity.fromStack(fluid, "fluid")
   end
-  -- allItems is a callable OC userdata: transfer one stack, not the entire network.
-  do
-    local nextItem, reason = self.me.allItems()
-    assert(nextItem, "ME item search failed: " .. tostring(reason))
-    local scanned = 0
-    while true do
-      local stack = nextItem()
-      if not stack then break end
-      if take(stack, "item") then info.itemTruncated = true; break end
-      scanned = scanned + 1
-      if pause and scanned % 64 == 0 then pause(scanned) end
-    end
-  end
-  -- The pinned OC API has no fluid iterator or filter; only matches are retained.
-  do
-    local fluids, reason = self.me.getFluidsInNetwork()
-    assert(type(fluids) == "table", "ME fluid search failed: " .. tostring(reason))
-    for _, stack in pairs(fluids) do
-      if take(stack, "fluid") then info.fluidTruncated = true; break end
-    end
-  end
-  table.sort(values, function(a, b)
-    local al, bl = a.label:lower(), b.label:lower()
-    if al == bl then return identity.key(a) < identity.key(b) end
-    return al < bl
-  end)
-  return values, info
+  assert(fluidError == nil or fluidError == "item is not a fluid container",
+    "Container inspection failed: " .. tostring(fluidError))
+  return identity.fromStack(stack, "item")
 end
 function Hardware:stock(rows)
   local counts = {}

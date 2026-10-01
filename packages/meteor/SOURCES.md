@@ -67,6 +67,20 @@ important for OpenComputers: `ConverterItemStack` only exposes compressed NBT
 when `allowItemStackNBTTags` is enabled; a tagged identity MUST NOT be merged
 with an untagged one merely because registry name and damage match.
 
+Product registration reads a physical sample through the existing transposer;
+it does not enumerate ME storage. `getFluidInContainerInSlot(side, slot)` checks
+Forge's `FluidContainerRegistry` and then `IFluidContainerItem`, so filled cells
+from either mechanism resolve to their contained fluid without interpreting
+mod-specific metadata or item NBT in Lua. Noncontainers and empty containers
+register as exact items; empty slots are rejected. Fluids use registry-name-only
+identity under the GTNH no-distinct-fluid-NBT assumption. Numeric runtime IDs,
+container identity, and contained amount are not fluid identity fields.
+
+Sampling sources at the pinned OpenComputers revision:
+- [Physical item descriptor](https://github.com/GTNewHorizons/OpenComputers/blob/1e4559ff5f2443695cb28c7cdc9fba87219a862b/src/main/scala/li/cil/oc/integration/vanilla/ConverterItemStack.scala#L20-L61)
+- [Cross-mod fluid-container lookup](https://github.com/GTNewHorizons/OpenComputers/blob/1e4559ff5f2443695cb28c7cdc9fba87219a862b/src/main/scala/li/cil/oc/server/component/traits/WorldFluidContainerAnalytics.scala#L35-L59)
+- [Fluid descriptor fields](https://github.com/GTNewHorizons/OpenComputers/blob/1e4559ff5f2443695cb28c7cdc9fba87219a862b/src/main/scala/li/cil/oc/integration/vanilla/ConverterFluidStack.scala#L11-L24)
+
 ## Ore-miner safety and non-ore outputs
 
 The complete source lists are retained, including blocks which are not ores.

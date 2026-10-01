@@ -21,7 +21,7 @@ local function proxyCallbacks(proxy, address)
   return proxy
 end
 function M.new(config, recipe)
-  local w = {time = 0, lp = 9000000, items = {}, fluids = {}, transfers = {}, requests = 0,
+  local w = {time = 0, lp = 9000000, items = {}, fluids = {}, sampleSlots = {}, transfers = {}, requests = 0,
     pulses = 0, outputs = {ritual = 0, filler = 0}, done = true, plantStates = {}, events = {}, config = config,
     stock = {}, jobs = {}, crafted = true, recipe = recipe, completeMining = true,
     fillerStartupDelay = 0.3, fillerDuration = 2}
@@ -90,18 +90,6 @@ function M.new(config, recipe)
     return true
   end
   local me = {}
-  function me.allItems()
-    if w.networkDown then error("ME disconnected") end
-    local key
-    return setmetatable({}, {__call = function()
-      if w.networkDown then error("ME disconnected") end
-      key = next(w.items, key)
-      if not key then return nil end
-      local stack = copy(w.items[key])
-      stack.size = w.stock[key] or 0
-      return stack
-    end})
-  end
   function me.getItemInNetwork(descriptor)
     if w.networkDown then error("ME disconnected") end
     local key = identity.key(descriptor)
@@ -113,7 +101,7 @@ function M.new(config, recipe)
   function me.getFluidInNetwork(descriptor)
     if w.networkDown then error("ME disconnected") end
     for _, stack in ipairs(w.fluids) do
-      if stack.name == descriptor.name and not stack.hasTag then return copy(stack) end
+      if stack.name == descriptor.name then return copy(stack) end
     end
   end
   function me.getItemsInNetwork(filter)
@@ -124,7 +112,6 @@ function M.new(config, recipe)
     end
     return result
   end
-  function me.getFluidsInNetwork() if w.networkDown then error("ME disconnected") end; return w.fluids end
   function me.getInterfaceConfiguration(slot) return w.reservation end
   function me.setInterfaceConfiguration(slot, d)
     if w.failClear and not d then error("clear failed") end
@@ -161,7 +148,13 @@ function M.new(config, recipe)
   local tp = {}
   function tp.getInventorySize(side) return 9 end
   function tp.getStackInSlot(side, slot)
-    if side == h.orbSide then
+    local entry = w.sampleSlots[side] and w.sampleSlots[side][slot]
+    if entry then
+      if not entry.stack then return nil end
+      local stack = copy(entry.stack)
+      if stack.size == nil then stack.size = 1 end
+      return stack
+    elseif side == h.orbSide and slot == h.orbSlot then
       if w.missingOrb then return nil end
       return {name = "AWWayofTime:archmageBloodOrb", damage = 0, hasTag = true, ownerName = w.owner or h.owner,
         orbTier = 5, networkEssence = w.lp, size = 1}
@@ -169,6 +162,11 @@ function M.new(config, recipe)
       local d = copy(w.reservation)
       if (w.stock[identity.key(d)] or 0) > 0 then d.size = 1; return d end
     elseif side == h.outputSide then return w.blockOutput end
+  end
+  function tp.getFluidInContainerInSlot(side, slot)
+    local entry = w.sampleSlots[side] and w.sampleSlots[side][slot]
+    if entry and entry.fluid then return copy(entry.fluid) end
+    return nil, "item is not a fluid container"
   end
   function tp.transferItem(source, target, amount, fromSlot, toSlot)
     if w.blockTransfer then return 0 end

@@ -1,4 +1,4 @@
--- Exact OC descriptors. Registry IDs, metadata and opaque binary NBT are identity.
+-- Items match registry name, metadata and opaque NBT; fluids match registry name only.
 local M = {}
 local function field(value)
   value = tostring(value)
@@ -11,19 +11,20 @@ function M.fromStack(stack, kind)
   assert(type(stack) == "table" and type(stack.name) == "string" and stack.name ~= "", "Missing registry name")
   kind = kind or stack.kind or "item"
   assert(kind == "item" or kind == "fluid", "Unknown product kind")
+  if kind == "fluid" then
+    return {kind = "fluid", name = stack.name, hasTag = false, label = stack.label or stack.name}
+  end
   assert(type(stack.hasTag) == "boolean", "NBT visibility unknown for " .. stack.name)
   if stack.hasTag then
     assert(type(stack.tag) == "string" and #stack.tag > 0,
-      "NBT unavailable for " .. stack.name .. "; enable OpenComputers allowItemStackNBTTags (tagged fluids are not exposed by this API)")
+      "NBT unavailable for " .. stack.name .. "; enable OpenComputers allowItemStackNBTTags")
   else
     assert(stack.tag == nil, "Contradictory NBT descriptor for " .. stack.name)
   end
   local d = {kind = kind, name = stack.name, hasTag = stack.hasTag,
     tag = stack.hasTag and stack.tag or nil, label = stack.label or stack.name}
-  if kind == "item" then
-    assert(finite(stack.damage) and stack.damage >= 0 and stack.damage % 1 == 0, "Missing item metadata for " .. stack.name)
-    d.damage = stack.damage
-  end
+  assert(finite(stack.damage) and stack.damage >= 0 and stack.damage % 1 == 0, "Missing item metadata for " .. stack.name)
+  d.damage = stack.damage
   return d
 end
 function M.key(d)
@@ -41,13 +42,14 @@ function M.fingerprint(d)
   return string.format("%08x", h)
 end
 function M.describe(d)
-  return d.name .. (d.kind == "fluid" and " [fluid, mB]" or ":" .. tostring(d.damage)) ..
+  if d.kind == "fluid" then return d.name .. " [fluid, mB]" end
+  return d.name .. ":" .. tostring(d.damage) ..
     (d.hasTag and " [NBT " .. M.fingerprint(d) .. ", " .. #d.tag .. " bytes]" or " [no NBT]")
 end
 function M.filter(d)
   M.fromStack(d)
-  local filter = {name = d.name, hasTag = d.hasTag}
-  if d.kind ~= "fluid" then filter.damage = d.damage end
+  if d.kind == "fluid" then return {name = d.name} end
+  local filter = {name = d.name, hasTag = d.hasTag, damage = d.damage}
   if d.hasTag then filter.tag = d.tag end
   return filter
 end

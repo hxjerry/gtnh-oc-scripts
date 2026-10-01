@@ -33,7 +33,7 @@ end
 local function clip(text, width)
   if size(text) <= width then return text end
   -- OC wtrunc can read past short strings and split UTF-16 surrogate pairs.
-  -- Search complete code-point prefixes instead, bounded by display width.
+  -- Find complete code-point prefixes instead, bounded by display width.
   local first, last = 0, unicode.len(text)
   while first < last do
     local middle = math.floor((first + last + 1) / 2)
@@ -99,7 +99,7 @@ function M.new(gpu, config, catalog, callbacks)
     gpu = gpu, config = config, catalog = catalog, callbacks = callbacks,
     screen = "home", selected = 1, scroll = 0, filters = {}, message = nil,
     closed = false, view = {}, discovered = nil, editTarget = nil,
-    pendingOre = nil, pendingRecipe = nil,
+    pendingOre = nil, pendingRecipe = nil, sampleSide = nil, sampleSlot = nil, samplePreview = nil,
     policyKey = nil, confirmAction = nil, prompt = nil
   }
   local ok, width, height = pcall(gpu.getResolution)
@@ -153,10 +153,6 @@ function M.new(gpu, config, catalog, callbacks)
   end
 
   function self:setScreen(name)
-    if name ~= "searching" then self.searchJob = nil end
-    if name ~= "browse" and not (name == "prompt" and self.prompt and self.prompt.kind == "productSearch") then
-      self.browseRows, self.browseInfo = nil, nil
-    end
     self.screen, self.selected, self.scroll = name, 1, 0
   end
 
@@ -316,14 +312,18 @@ function M.new(gpu, config, catalog, callbacks)
           self.message = "Mapped product: " .. formatDescriptor(product)
         end}
       end
-      result[#result + 1] = {label = "+ Add ME product", action = function() self:beginProductSearch() end}
+      result[#result + 1] = {label = "+ Add product from slot", action = function() self:beginSampling() end}
       return result
-    elseif self.screen == "browse" then
-      local result = {}
-      for _, descriptor in ipairs(self.browseRows or {}) do
-        result[#result + 1] = {label = formatDescriptor(descriptor), action = function() self:addProduct(descriptor) end}
-      end
-      return result
+    elseif self.screen == "sampling" then
+      return {
+        {label = "Transposer side (0-5)  =  " .. tostring(self.sampleSide), action = function()
+          self:openPrompt("sampleSide", "sampleSide", tostring(self.sampleSide), "number")
+        end},
+        {label = "Inventory slot (1+)  =  " .. tostring(self.sampleSlot), action = function()
+          self:openPrompt("sampleSlot", "sampleSlot", tostring(self.sampleSlot), "number")
+        end},
+        {label = "Capture and add exact sample", action = function() self:captureSample() end}
+      }
     elseif self.screen == "policies" then
       local rows = self.view.rows or {}
       if #rows == 0 then
@@ -449,7 +449,7 @@ function M.new(gpu, config, catalog, callbacks)
 
   function self:addProduct(product)
     local ore = self.pendingOre
-    if not ore then self.message = "No ore selected"; return end
+    if not ore then self.message = "No ore selected"; return false end
     local added = self:mutate(function()
       local products = copy(self.config.oreProducts[ore.key] or {})
       local key = identity.key(product)
@@ -460,56 +460,46 @@ function M.new(gpu, config, catalog, callbacks)
       self.config.oreProducts[ore.key] = products
     end)
     if added then self:setScreen("mapping") end
+    return added
   end
 
-  function self:beginProductSearch()
-    self.message = nil
-    self:openPrompt("productSearch", nil, self.browseQuery or "", "text")
+  function self:beginSampling()
+    self.sampleSide = self.sampleSide or (self.config.hardware and self.config.hardware.orbSide) or 0
+    self.sampleSlot = self.sampleSlot or 1
+    self.samplePreview = nil
+    self.message = "Choose a transposer side and slot, then capture the exact item or contained fluid."
+    self:setScreen("sampling")
   end
 
-  function self:searchProducts(query)
-    self.browseRows, self.browseInfo = nil, nil
-    local callback = self.callbacks.searchProducts
-    if type(callback) ~= "function" then self.message = "ME search callback is unavailable"; return end
-    self.browseQuery, self.searchScanned, self.message = query, 0, nil
-    self:setScreen("searching")
-    self.searchJob = coroutine.create(function()
-      return callback(query, function(scanned) coroutine.yield(scanned) end)
-    end)
-  end
-
-  function self:tickSearch()
-    local job = self.searchJob
-    if not job then return end
-    local okSearch, result, info = coroutine.resume(job)
-    if not okSearch or (coroutine.status(job) == "dead" and (type(result) ~= "table" or type(info) ~= "table")) then
-      self:setScreen("mapping")
-      self:beginProductSearch()
-      self.message = okSearch and "ME search returned no results" or tostring(result)
-      return
+  function self:captureSample()
+    if self:busy() then
+      self.message = "Stop the active operation before sampling products."
+      return false
     end
-    if coroutine.status(job) ~= "dead" then self.searchScanned = result; return end
-    self.browseRows, self.browseInfo = result, info
-    self:setScreen("browse")
-    local messages = {}
-    if #result == 0 then messages[#messages + 1] = "No readable item or fluid matches. Press / to search again." end
-    if info.itemTruncated or info.fluidTruncated then
-      messages[#messages + 1] = "Results capped at 50 per kind; press / and narrow the search."
+    local callback = self.callbacks.sampleProduct
+    if type(callback) ~= "function" then
+      self.message = "sampleProduct callback is unavailable"
+      return false
     end
-    if info.skipped > 0 then
-      messages[#messages + 1] = info.skipped .. " matching entries with unreadable identity skipped: " .. info.firstError
+    self.samplePreview = nil
+    local okSample, product, extra = pcall(callback, self.sampleSide, self.sampleSlot)
+    if not okSample then
+      self.message = tostring(product)
+      return false
     end
-    self.message = #messages > 0 and table.concat(messages, " ") or nil
+    if product == false or type(product) ~= "table" then
+      self.message = tostring(extra or product or "No product sampled")
+      return false
+    end
+    self.samplePreview = product
+    local added = self:addProduct(product)
+    if added then self.message = "Added sample: " .. formatDescriptor(product) end
+    return added
   end
 
   function self:confirmPrompt()
     local prompt = self.prompt
     local text = trim(prompt.text)
-    if prompt.kind == "productSearch" then
-      if text == "" then self.message = "Enter a nonblank search term."; return end
-      self:searchProducts(text)
-      return
-    end
     if prompt.kind == "filter" then
       self.filters[prompt.target] = text
       self:setScreen(prompt.priorScreen)
@@ -520,6 +510,19 @@ function M.new(gpu, config, catalog, callbacks)
       value = tonumber(text)
       if not value or value ~= value or value == math.huge or value == -math.huge then self.message = "Enter a finite number."; return end
       if value % 1 ~= 0 then self.message = "This setting requires a whole number."; return end
+    end
+    if prompt.kind == "sampleSide" then
+      if value < 0 or value > 5 then self.message = "Sides must be 0 through 5."; return end
+      self.sampleSide = value
+      self.message = nil
+      self:setScreen("sampling")
+      return
+    elseif prompt.kind == "sampleSlot" then
+      if value < 1 then self.message = "Inventory slots start at 1."; return end
+      self.sampleSlot = value
+      self.message = nil
+      self:setScreen("sampling")
+      return
     end
     local okChange
     if prompt.kind == "hardware" then
@@ -546,6 +549,7 @@ function M.new(gpu, config, catalog, callbacks)
     if okChange then self.message = "Settings saved." end
   end
 
+
   function self:drawList(title, subtitle, entries, filterKey)
     self:clear(); self:header(title); self:notice()
     local offsetY = 5
@@ -567,7 +571,7 @@ function M.new(gpu, config, catalog, callbacks)
       self:put(2, line, prefix .. entries[index].label, color)
     end
     self:put(2, 27, string.format("%d entries   page %d/%d", #entries, page, totalPages), COLORS.muted)
-    self:footer(self.screen == "browse" and "↑↓ select  Enter add product  / search again  PgUp/PgDn page  Tab back" or
+    self:footer(self.screen == "sampling" and "↑↓ select  Enter choose/capture  Tab back" or
       "↑↓ select  Enter open  / filter  PgUp/PgDn page  Tab back  D remove (mapping)")
   end
 
@@ -629,22 +633,18 @@ function M.new(gpu, config, catalog, callbacks)
     self:put(17, 41, "[Automatic]", COLORS.green)
     self:put(34, 41, "[Stop]", COLORS.yellow)
     self:put(46, 41, "[Quit]", COLORS.red)
-    self:put(2, 43, "Policy edit: Enter   Actions: M   Auto: A   Stop: S   Search: /   Page: PgUp/PgDn", COLORS.muted)
+    self:put(2, 43, "Policy edit: Enter   Actions: M   Auto: A   Stop: S   / filter   Page: PgUp/PgDn", COLORS.muted)
     self:put(2, 45, "OC event-driven interface — dialogs never pull or block events", COLORS.muted)
     self:footer("↑↓ select output  Enter policy  M actions  A automatic  S stop  / filter  PgUp/PgDn page  Q quit")
   end
 
   function self:drawPrompt()
     local prompt = self.prompt
-    local search = prompt.kind == "productSearch"
-    self:clear(); self:header(search and "SEARCH ME PRODUCTS" or "EDIT VALUE")
+    self:clear(); self:header("EDIT VALUE")
     self:notice()
-    local line = (search and "Search: " or "Value: ") .. prompt.text .. "_"
-    self:put(3, 7, line, COLORS.yellow)
-    self:put(3, 9, search and "One term searches item and fluid labels/registry names (case-insensitive literal substring)." or
-      "Type a value, Backspace deletes, clipboard paste supported.", COLORS.muted)
+    self:put(3, 7, "Value: " .. prompt.text .. "_", COLORS.yellow)
+    self:put(3, 9, "Type a value, Backspace deletes, clipboard paste supported.", COLORS.muted)
     self:put(3, 10, "Enter accepts   Tab cancels", COLORS.muted)
-    if search then self:put(3, 12, "At most 50 items + 50 fluids. Narrow the term if results are capped.", COLORS.muted) end
     self:footer("Enter accept   Tab cancel   Backspace delete")
   end
 
@@ -668,26 +668,22 @@ function M.new(gpu, config, catalog, callbacks)
     if self.screen == "home" then self:drawHome()
     elseif self.screen == "prompt" then self:drawPrompt()
     elseif self.screen == "confirm" then self:drawConfirm()
-    elseif self.screen == "searching" then
-      self:clear(); self:header("SEARCHING ME PRODUCTS"); self:notice()
-      self:put(2, 7, "Search: " .. self.browseQuery .. "  |  " .. self.searchScanned .. " items scanned", COLORS.yellow)
-      self:put(2, 9, "Searching items and fluids; up to 50 matches of each kind. Tab cancels.", COLORS.muted)
-      self:footer("Tab cancel search")
     else
       local entries = self:entries()
-      local titles = {menu = "ACTIONS", hardware = "HARDWARE SETUP", machines = "ALL MACHINE STATUSES", settings = "CONTROLLER SETTINGS", addresses = "SELECT COMPONENT ADDRESS", ores = "ORE-PRODUCT MAPPING", mapping = "MAPPED PRODUCTS", browse = "ME PRODUCT SEARCH", policies = "PRODUCT POLICIES", policyedit = "EDIT PRODUCT POLICY", meteorChoices = "SELECT METEOR", recipes = "MANUAL METEOR RECIPE", recipeDetail = "RECIPE DETAILS"}
+      local titles = {menu = "ACTIONS", hardware = "HARDWARE SETUP", machines = "ALL MACHINE STATUSES", settings = "CONTROLLER SETTINGS", addresses = "SELECT COMPONENT ADDRESS", ores = "ORE-PRODUCT MAPPING", mapping = "MAPPED PRODUCTS", sampling = "SAMPLE PRODUCT FROM SLOT", policies = "PRODUCT POLICIES", policyedit = "EDIT PRODUCT POLICY", meteorChoices = "SELECT METEOR", recipes = "MANUAL METEOR RECIPE", recipeDetail = "RECIPE DETAILS"}
       local subtitle
       if self.screen == "mapping" and self.pendingOre then subtitle = self.pendingOre.label .. "  {" .. self.pendingOre.key .. "}" end
-      if self.screen == "browse" then
-        subtitle = "Search: " .. (self.browseQuery or "") .. "  |  " .. #(self.browseRows or {}) .. " matches  |  max 50 items + 50 fluids"
-      end
       if self.screen == "recipeDetail" and self.pendingRecipe then
         local recipe = self.pendingRecipe
         subtitle = recipe.label .. "  /  " .. recipe.id .. "  /  Meteor LP " .. tostring(recipe.lp)
       end
       local filters = {ores = "ores", policies = "policies", recipes = "recipes"}
       self:drawList(titles[self.screen] or "METEOR", subtitle, entries, filters[self.screen])
-      if self.screen == "mapping" then self:put(2, 28, "Products identify eligible meteors only. Enter shows identity; D removes; A searches items and fluids.", COLORS.muted) end
+      if self.screen == "mapping" then self:put(2, 28, "Products identify eligible meteors only. Enter shows identity; D removes; A samples a physical slot.", COLORS.muted) end
+      if self.screen == "sampling" then
+        self:put(2, 28, "Choose side and slot, then capture. Filled containers register their fluid; other items register as items. Empty slots are rejected.", COLORS.muted)
+        if self.samplePreview then self:put(2, 29, "Preview: " .. formatDescriptor(self.samplePreview), COLORS.cyan) end
+      end
       if self.screen == "hardware" then
         self:put(2, 31, "Ritual address is an edge-triggered activator with bound crystal; do not wire it directly to MRS.", COLORS.yellow)
         self:put(2, 32, "Owner must exactly match the activation crystal/orb owner name. Source side is the dedicated ME interface.", COLORS.yellow)
@@ -788,7 +784,7 @@ function M.new(gpu, config, catalog, callbacks)
       if self.screen == "home" then self:setScreen("menu")
       elseif self.screen == "menu" then self:setScreen("home")
       elseif self.screen == "mapping" then self:setScreen("ores")
-      elseif self.screen == "browse" or self.screen == "searching" then self:setScreen("mapping")
+      elseif self.screen == "sampling" then self:setScreen("mapping")
       elseif self.screen == "policyedit" then self:setScreen("policies")
       elseif self.screen == "meteorChoices" then self:setScreen("policyedit")
       elseif self.screen == "recipeDetail" then self:setScreen("recipes")
@@ -809,7 +805,6 @@ function M.new(gpu, config, catalog, callbacks)
     elseif keyCode == KEY.enter then self:activate()
     elseif keyCode == KEY.backspace and self.filters[self.screen] then
       local key = self.screen; self.filters[key] = slice(self.filters[key], 1, size(self.filters[key]) - 1); self.selected, self.scroll = 1, 0
-    elseif charCode == 47 and self.screen == "browse" then self:beginProductSearch()
     elseif charCode == 47 and ({home = true, ores = true, policies = true, recipes = true})[self.screen] then
       local keys = {home = "home", ores = "ores", policies = "policies", recipes = "recipes"}
       self:openPrompt("filter", keys[self.screen], self.filters[keys[self.screen]] or "", "text")
@@ -819,7 +814,7 @@ function M.new(gpu, config, catalog, callbacks)
     elseif charCode == 113 and self.screen == "home" then self.confirmAction = "shutdown"; self:setScreen("confirm")
     elseif charCode == 118 and self.screen == "home" then self:setScreen("machines")
     elseif (charCode == 100 or charCode == 127) and self.screen == "mapping" then self:removeMapping()
-    elseif charCode == 97 and self.screen == "mapping" then self:beginProductSearch() end
+    elseif charCode == 97 and self.screen == "mapping" then self:beginSampling() end
     local count = self.screen == "home" and #self:visibleHomeRows() or #self:entries()
     if count > 0 then
       self.selected = math.max(1, math.min(count, self.selected))
@@ -853,7 +848,7 @@ function M.new(gpu, config, catalog, callbacks)
       self.selected = x < 20 and 1 or 2
       self:activate(); return
     end
-    local offset = ({ores = true, browse = true, policies = true, recipes = true, recipeDetail = true})[self.screen] and 6 or 5
+    local offset = ({ores = true, mapping = true, policies = true, recipes = true, recipeDetail = true})[self.screen] and 6 or 5
     if y >= offset and y < offset + PAGE_SIZE then
       local index = math.floor(self.scroll / PAGE_SIZE) * PAGE_SIZE + y - offset + 1
       local entries = self:entries()
@@ -885,7 +880,6 @@ function M.new(gpu, config, catalog, callbacks)
   function self:close()
     if self.closed then return end
     self.closed = true
-    self.searchJob, self.browseRows, self.browseInfo = nil, nil, nil
     pcall(self.gpu.setResolution, self.oldResolution[1], self.oldResolution[2])
     if self.oldForeground then pcall(self.gpu.setForeground, self.oldForeground[1], self.oldForeground[2]) end
     if self.oldBackground then pcall(self.gpu.setBackground, self.oldBackground[1], self.oldBackground[2]) end
