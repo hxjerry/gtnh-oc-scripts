@@ -158,10 +158,9 @@ function M.new(gpu, config, catalog, callbacks)
 
   function self:busy()
     local state, mode = tostring(self.view.state or ""):lower(), tostring(self.view.mode or ""):lower()
-    -- Saves are accepted only while stopped; FAULT is deliberately editable for recovery.
-    if mode ~= "" and mode ~= "stopped" and mode ~= "fault" then return true end
-    if state == "fault" or mode == "fault" then return false end
-    return state ~= "" and state ~= "stopped" and state ~= "ready" and state ~= "idle"
+    if state == "fault" then return false end
+    if mode ~= "" and mode ~= "stopped" then return true end
+    return state ~= "" and state ~= "idle" and state ~= "ready"
   end
 
   function self:mutate(change)
@@ -276,7 +275,7 @@ function M.new(gpu, config, catalog, callbacks)
       for index, plant in ipairs(self.view.plants or {}) do
         out[#out + 1] = {label = tostring(index) .. ".  " .. tostring(plant.address or "plant") .. "  /  " .. tostring(plant.status or "unknown")}
       end
-      if #out == 0 then out[1] = {label = "No machine status reported yet.", action = function() end} end
+      if #out == 0 then out[1] = {label = "No machine status reported yet."} end
       return out
     elseif self.screen == "addresses" then
       local result = {}

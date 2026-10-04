@@ -8,11 +8,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
-import sys
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional
 
 BLOODMAGIC_COMMIT = "10a36f6413b8a7ce6ebf16ca8b04614ff15566cd"
 OPENCOMPUTERS_COMMIT = "1e4559ff5f2443695cb28c7cdc9fba87219a862b"
@@ -165,6 +163,7 @@ def build_catalog(directory: Path, revision: Optional[str]) -> Dict[str, Any]:
         if "ores" not in raw:
             raise ValueError("meteor %s has no ores" % path.name)
         focus = parse_descriptor(raw["focusItem"])
+        meteor_cost = int(raw.get("cost", 1000000))
         ores = parse_components(raw["ores"], "ores", path.name)
         recipe: Dict[str, Any] = {
             "id": path.stem,
@@ -172,13 +171,13 @@ def build_catalog(directory: Path, revision: Optional[str]) -> Dict[str, Any]:
             "focus": focus,
             "catalyst": parse_descriptor(DEFAULT_CATALYST),
             "catalyst_quantity": 1,
-            "lp": int(raw.get("cost", 1000000)),
+            "lp": meteor_cost,
             "radius": raw.get("radius", 1),
             "ores": ores,
             "ore_miner": ore_miner_annotation(ores),
             "filler": parse_components(raw.get("filler"), "filler", path.name),
             "filler_chance": raw.get("fillerChance", 0),
-            "reserve_lp": DEFAULT_ACTIVATION_LP + int(raw.get("cost", 1000000)),
+            "reserve_lp": DEFAULT_ACTIVATION_LP + meteor_cost,
             "reagent_amount": REAGENT_AMOUNT,
             "raw": raw,
         }
@@ -312,7 +311,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         output = HEADER % lua_literal(catalog)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(output, encoding="utf-8")
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:
         parser.error(str(exc))
     return 0
 

@@ -15,7 +15,7 @@ function M.open(path)
     if type(state) == "table" and interrupted then stageRecord = state.staging end
   end
   if filesystem.exists(path .. ".tmp") then interrupted = true end
-  local function save(dirty, recipe, staging)
+  local function save(dirty, staging)
     local parent = filesystem.path(path)
     if not filesystem.exists(parent) then
       assert(filesystem.makeDirectory(parent), "Cannot create journal directory")
@@ -23,7 +23,7 @@ function M.open(path)
     local tmp = path .. ".tmp"
     local file, why = io.open(tmp, "wb")
     assert(file, why)
-    local ok, err = file:write(serialization.serialize({dirty = dirty, recipe = recipe, staging = staging}))
+    local ok, err = file:write(serialization.serialize({dirty = dirty, staging = staging}))
     local flushed, flushError = file:flush()
     local closed, closeError = file:close()
     assert(ok, err)

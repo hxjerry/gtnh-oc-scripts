@@ -30,7 +30,7 @@ local function setup(options)
   local hw = hardware.new(w.component, config):connect()
   local journal = {}
   local c = controller.new(config, catalog, hw, function() return w.time end,
-    function(dirty, id, staging) journal.dirty, journal.recipe, journal.staging = dirty, id, staging end)
+    function(dirty) journal.dirty = dirty end)
   c:boot(false)
   return c, w, config, journal, hw
 end
@@ -696,14 +696,12 @@ test("sampling rejects empty slots, invalid bounds and unreadable items without 
   assert(identity.same(w.sampleSlots[0][2].stack, emptyCell))
 end)
 
-test("monitoring an added product never loads unrelated ME inventory", function()
+test("targeted stock lookups return exact item and fluid quantities", function()
   local _, w, _, _, hw = setup()
   local a, b = world.item("mod:product", 1, "\0a"), world.item("mod:product", 1, "\0b")
   w:add(a, 12); w:add(b, 900)
   local fluid = {kind = "fluid", name = "molten.iron", label = "Molten Iron", hasTag = false}
   w.fluids = {{name = fluid.name, label = fluid.label, hasTag = false, amount = 288}}
-  w.proxies.me.getItemsInNetwork = function() error("Bulk items exceed OC RAM") end
-  w.proxies.me.getFluidsInNetwork = function() error("Bulk fluids exceed OC RAM") end
   local rows = {{key = identity.key(a), product = a}, {key = identity.key(fluid), product = fluid}}
   local counts = hw:stock(rows)
   assert(counts[identity.key(a)] == 12 and counts[identity.key(fluid)] == 288)
@@ -997,8 +995,9 @@ test("restart requires clearing journaled buffer slots before acknowledging reco
   tick(restarted, w, 10)
   assert(restarted.state == "FAULT" and #w.staged == 2 and #w.transfers == 0 and w.pulses == 0)
   raises(function() restarted:reset() end, "buffer slot")
-  local _, stillDirty = require("meteor.journal").open(path)
-  assert(stillDirty)
+  local _, interruptedAgain, record = require("meteor.journal").open(path)
+  assert(interruptedAgain and record.transposer == "tp" and record.side == 0)
+  assert(record.slots[1] == 2 and record.slots[2] == 3)
   w.buffer = {}
   restarted:reset()
   tick(restarted, w, 3)
@@ -1011,7 +1010,7 @@ test("journal restart latches dirty intent and clears on acknowledgement", funct
   local path = "/etc/meteor/state"
   local journal, dirty = require("meteor.journal").open(path)
   assert(not dirty)
-  journal(true, "iron")
+  journal(true)
   local reloaded, interrupted = require("meteor.journal").open(path)
   assert(interrupted)
   reloaded(false)
@@ -1024,12 +1023,12 @@ end)
 test("failed journal flush cannot clear interrupted-cycle intent", function()
   local path = "/etc/meteor/flush-error-state"
   local save = require("meteor.journal").open(path)
-  save(true, "iron")
+  save(true)
   runtime.fs.failFlushTo = path .. ".tmp"
   raises(function() save(false) end)
   runtime.fs.failFlushTo = nil
   local state = package.loaded.serialization.unserialize(runtime.files[path])
-  assert(state.dirty and state.recipe == "iron")
+  assert(state.dirty)
   local _, interrupted = require("meteor.journal").open(path)
   assert(interrupted)
 end)

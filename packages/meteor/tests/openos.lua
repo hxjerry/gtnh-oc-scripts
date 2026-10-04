@@ -55,7 +55,6 @@ function M.install()
     directories[path] = true
     return true
   end
-  function fs.isDirectory(path) return directories[path] == true end
   function fs.remove(path) files[path] = nil; directories[path] = nil; return true end
   function fs.rename(from, to)
     if fs.failRenameTo == to then return nil, "simulated rename failure" end
@@ -98,13 +97,6 @@ function M.install()
       end,
     }
   end
-  function fs.open(path, mode)
-    local buffered, why = io.open(path, mode)
-    if not buffered then return nil, why end
-    local read = buffered.read
-    buffered.read = function(self, count) assert(type(count) == "number", "raw filesystem.read needs a number"); return read(self, count) end
-    return buffered
-  end
   package.loaded.filesystem = fs
   package.loaded.serialization = {serialize = quote, unserialize = function(text)
     local chunk, reason = load("return " .. text, "=saved-data", "t", {})
@@ -118,7 +110,7 @@ function M.install()
 end
 function M.gpu()
   local width, height, foreground, background, depth = 80, 25, 0xFFFFFF, 0, 4
-  local grid, colors = {}, {}
+  local grid = {}
   local function blank()
     grid = {}
     for y = 1, height do grid[y] = {}; for x = 1, width do grid[y][x] = " " end end
@@ -134,8 +126,8 @@ function M.gpu()
     end,
     getForeground = function() return foreground, false end,
     getBackground = function() return background, false end,
-    setForeground = function(c) foreground = c; colors[c] = true; return c end,
-    setBackground = function(c) background = c; colors[c] = true; return c end,
+    setForeground = function(c) foreground = c; return c end,
+    setBackground = function(c) background = c; return c end,
     getDepth = function() return depth end, maxDepth = function() return 8 end,
     setDepth = function(d) assert(d == 4 or d == 8); depth = d; return true end,
     set = function(x, y, text)
@@ -158,7 +150,6 @@ function M.gpu()
     for y = 1, height do lines[y] = table.concat(grid[y]):gsub(" +$", "") end
     return table.concat(lines, "\n")
   end
-  function gpu.colorCount() local n = 0; for _ in pairs(colors) do n = n + 1 end; return n end
   return gpu
 end
 return M

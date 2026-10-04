@@ -161,7 +161,7 @@ function Controller:prepare(id, craft)
   for i, input in ipairs(inputs) do input.slot = slots[i] end
   self.stageRecord = {transposer = self.hw.transposer.address, side = self.config.hardware.orbSide, slots = slots}
   -- Only physical staging/ritual work dirties the journal; background crafts do not.
-  self.journal(true, id, self.stageRecord)
+  self.journal(true, self.stageRecord)
   self.pending = {recipe = recipe, inputs = inputs, index = 1}
   self.consuming = false
   self:transition("STAGING", "Buffering all inputs in orb inventory: " .. recipe.label)

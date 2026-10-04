@@ -23,7 +23,7 @@ local function proxyCallbacks(proxy, address)
 end
 function M.new(config, recipe)
   local w = {time = 0, lp = 9000000, items = {}, fluids = {}, sampleSlots = {}, buffer = {}, staged = {}, returned = {}, transfers = {}, requests = 0,
-    pulses = 0, outputs = {ritual = 0, filler = 0}, done = true, plantStates = {}, events = {}, config = config,
+    pulses = 0, outputs = {ritual = 0, filler = 0}, done = true, plantStates = {}, events = {},
     stock = {}, jobs = {}, externalJobs = {}, crafted = true, recipe = recipe, completeMining = true,
     fillerStartupDelay = 0.3, fillerDuration = 2}
   local h = config.hardware
@@ -136,7 +136,6 @@ function M.new(config, recipe)
         return state.failed or state.savedFailure or false, state.failed and "request failed (missing resources)" or "no link"
       end
       state.status = {hasFailed = failure,
-        isComputing = function() return state.computing end,
         isCanceled = function()
           if state.computing then return false, "computing" end
           if state.linked then return state.canceled or false end
@@ -177,7 +176,6 @@ function M.new(config, recipe)
   end
   function tp.transferItem(source, target, amount, fromSlot, toSlot)
     assert(amount == 1)
-    if w.blockTransfer then return 0 end
     if source == h.sourceSide and target == h.orbSide then
       if w.blockStage then return 0 end
       assert(fromSlot == h.interfaceSlot and toSlot ~= h.orbSlot)
@@ -191,7 +189,6 @@ function M.new(config, recipe)
       w.staged[#w.staged + 1] = {time = w.time, descriptor = d, slot = toSlot}
     elseif source == h.orbSide and target == h.sourceSide then
       assert(not w.reservation and toSlot == h.interfaceSlot and fromSlot ~= h.orbSlot)
-      if w.blockReturn then return 0 end
       local d = assert(w.buffer[fromSlot], "Buffer empty")
       assert(d.size == 1)
       w.buffer[fromSlot] = nil
@@ -199,7 +196,6 @@ function M.new(config, recipe)
       w.returned[#w.returned + 1] = {time = w.time, descriptor = d, slot = fromSlot}
     else
       assert(source == h.orbSide and target == h.outputSide and fromSlot ~= h.orbSlot)
-      if w.blockDelivery then return 0 end
       assert(not tp.getStackInSlot(target, toSlot), "Drop slot occupied")
       local d = assert(w.buffer[fromSlot], "Buffer empty")
       assert(d.size == 1)
