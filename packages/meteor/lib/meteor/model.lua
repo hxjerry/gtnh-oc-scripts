@@ -57,16 +57,23 @@ function M.validate(config, catalog)
   end
   return true
 end
-function M.choose(rows, after)
-  -- Round-robin deficits. Absent targets are zero; failed network reads are not observations.
-  if #rows == 0 then return nil end
+function M.eachDeficit(rows, after, visit)
+  if #rows == 0 then return end
   local start = 0
   for i, row in ipairs(rows) do if row.key == after then start = i end end
   for offset = 1, #rows do
     local row = rows[(start + offset - 1) % #rows + 1]
     if row.policy.active and row.validMeteor and row.stock ~= nil and row.stock < row.policy.target then
-      return {recipe = row.policy.meteor, craft = row.policy.craft, key = row.key}
+      if visit(row) == false then return end
     end
   end
+end
+function M.choose(rows, after)
+  local chosen
+  M.eachDeficit(rows, after, function(row)
+    chosen = {recipe = row.policy.meteor, craft = row.policy.craft, key = row.key}
+    return false
+  end)
+  return chosen
 end
 return M

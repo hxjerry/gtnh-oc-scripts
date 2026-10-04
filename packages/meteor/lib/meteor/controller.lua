@@ -283,9 +283,16 @@ function Controller:tick()
     if now < self.nextPrepare then return end
     self.nextPrepare = now + 1
     if self.mode == "auto" then
-      local task = model.choose(self.rows, self.lastProduct)
-      if task then self.lastProduct = task.key; self:prepare(task.recipe, task.craft)
-      else self.detail = "All active targets satisfied (or no products activated)" end
+      local found, started = false, false
+      model.eachDeficit(self.rows, self.lastProduct, function(row)
+        found, self.lastProduct = true, row.key
+        if self:prepare(row.policy.meteor, row.policy.craft) then
+          started = true
+          return false
+        end
+      end)
+      if not found then self.detail = "All active targets satisfied (or no products activated)"
+      elseif not started then self.detail = "Waiting for inputs across active stock deficits" end
     elseif self.mode == "loop" or self.mode == "once" then
       self:prepare(self.manualRecipe, self.config.manualCraft)
     end

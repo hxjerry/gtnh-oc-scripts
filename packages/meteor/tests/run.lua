@@ -225,7 +225,7 @@ test("unavailable meteor yields to a runnable deficit with or without craft perm
     c.lastProduct = identity.key(other)
     c:auto()
     tick(c, w, 0.1)
-    assert(c.state == "IDLE" and c.recipe == nil and w.requests == (craft and 1 or 0))
+    assert(c.state == "STAGING" and c.recipe == nil and w.requests == (craft and 1 or 0))
     untilState(c, w, "LP", 3)
     assert(c.recipe.id == "ready" and identity.same(w.staged[1].descriptor, focus))
     untilState(c, w, "IDLE")
@@ -233,7 +233,7 @@ test("unavailable meteor yields to a runnable deficit with or without craft perm
   end
 end)
 
-test("shared catalyst across deficits keeps one live request per exact item", function()
+test("auto requests inputs for every waiting deficit without duplicating shared inputs", function()
   local c, w, cfg = setup()
   local focus = world.item(recipe.focus.name, recipe.focus.damage + 1)
   local other = world.item("mod:product", 2)
@@ -246,10 +246,44 @@ test("shared catalyst across deficits keeps one live request per exact item", fu
   w.stock[identity.key(recipe.focus)], w.stock[identity.key(recipe.catalyst)] = 0, 0
   w.jobDelay = math.huge
   c:auto()
+  tick(c, w, 0.1)
+  assert(w.requests == 3 and c.state == "IDLE" and #w.staged == 0 and w.pulses == 0)
+  local requested = {}
+  for _, job in ipairs(w.jobs) do
+    local key = identity.key(job.descriptor)
+    requested[key] = (requested[key] or 0) + 1
+  end
+  assert(requested[identity.key(recipe.catalyst)] == 1)
+  assert(requested[identity.key(recipe.focus)] == 1 and requested[identity.key(focus)] == 1)
+  w:advance(0.7)
+  tick(c, w, 0.5)
+  assert(w.jobs[1].linked and w.jobs[2].linked and w.jobs[3].linked and w.requests == 3)
   tick(c, w, 20)
-  local catalysts = 0
-  for _, job in ipairs(w.jobs) do if identity.same(job.descriptor, recipe.catalyst) then catalysts = catalysts + 1 end end
-  assert(w.requests == 3 and catalysts == 1 and c.state == "IDLE" and #w.staged == 0)
+  assert(w.requests == 3 and c.state == "IDLE" and #w.staged == 0)
+end)
+
+test("a live craft for one exact item does not block ordering another deficit", function()
+  local c, w, cfg = setup({catalyst = false, craft = true})
+  local focus = world.item("gregtech:gt.blockmachines", 464)
+  local other = world.item("mod:product", 2)
+  c.catalog.recipes[2] = {id = "other", label = "Other", focus = focus, catalyst = recipe.catalyst,
+    lp = recipe.lp, ores = {{key = "oreOther", weight = 100}}}
+  w.stock[identity.key(recipe.focus)] = 0
+  w.jobDelay = math.huge
+  cfg.policies[identity.key(product)] = {active = true, target = 1, meteor = "iron", craft = true}
+  c:auto()
+  tick(c, w, 0.1)
+  local first = assert(w.jobs[1])
+  assert(w.requests == 1)
+  w:advance(0.6)
+  assert(first.linked and not first.done)
+  cfg.oreProducts.oreOther = {other}
+  cfg.policies[identity.key(other)] = {active = true, target = 1, meteor = "other", craft = true}
+  w:add(focus, 0)
+  c.nextStock = 0
+  tick(c, w, 0.5)
+  assert(w.requests == 2 and c.state == "IDLE" and #w.staged == 0)
+  assert(identity.same(w.jobs[1].descriptor, recipe.focus) and identity.same(w.jobs[2].descriptor, focus))
 end)
 
 test("external exact crafting output suppresses requests; other metadata and NBT do not", function()
