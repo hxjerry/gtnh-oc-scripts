@@ -10,6 +10,7 @@ local function copy(t)
   return out
 end
 local function proxyCallbacks(proxy, address)
+  proxy.address = address
   for name, method in pairs(proxy) do
     if type(method) == "function" then
       local fn = method
@@ -21,9 +22,9 @@ local function proxyCallbacks(proxy, address)
   return proxy
 end
 function M.new(config, recipe)
-  local w = {time = 0, lp = 9000000, items = {}, fluids = {}, sampleSlots = {}, transfers = {}, requests = 0,
+  local w = {time = 0, lp = 9000000, items = {}, fluids = {}, sampleSlots = {}, buffer = {}, staged = {}, returned = {}, transfers = {}, requests = 0,
     pulses = 0, outputs = {ritual = 0, filler = 0}, done = true, plantStates = {}, events = {}, config = config,
-    stock = {}, jobs = {}, crafted = true, recipe = recipe, completeMining = true,
+    stock = {}, jobs = {}, externalJobs = {}, crafted = true, recipe = recipe, completeMining = true,
     fillerStartupDelay = 0.3, fillerDuration = 2}
   local h = config.hardware
   h.me, h.transposer, h.ritual, h.filler, h.owner = "me", "tp", "ritual", "filler", "Owner"
@@ -40,7 +41,7 @@ function M.new(config, recipe)
       end
       if not job.done and not job.failed and not job.canceled and self.time >= job.at then
         job.done = true
-        self:add(job.descriptor, (self.stock[identity.key(job.descriptor)] or 0) + 1)
+        self:add(job.descriptor, (self.stock[identity.key(job.descriptor)] or 0) + job.amount)
       end
     end
     for _, plant in ipairs(self.plantStates) do
@@ -85,10 +86,6 @@ function M.new(config, recipe)
     -- Pinned OC CraftingStatus.save mutates failed, not the actual ME job.
     for _, job in ipairs(self.jobs) do job.savedFailure = not job.linked or not job.done end
   end
-  local function filtered(d, f)
-    for k, v in pairs(f or {}) do if d[k] ~= v then return false end end
-    return true
-  end
   local me = {}
   function me.getItemInNetwork(descriptor)
     if w.networkDown then error("ME disconnected") end
@@ -104,33 +101,41 @@ function M.new(config, recipe)
       if stack.name == descriptor.name then return copy(stack) end
     end
   end
-  function me.getItemsInNetwork(filter)
-    if w.networkDown then error("ME disconnected") end
-    local result = {}
-    for key, d in pairs(w.items) do
-      if filtered(d, filter) then local stack = copy(d); stack.size = w.stock[key] or 0; result[#result + 1] = stack end
-    end
-    return result
-  end
   function me.getInterfaceConfiguration(slot) return w.reservation end
   function me.setInterfaceConfiguration(slot, d)
     if w.failClear and not d then error("clear failed") end
     w.reservation = d and copy(d) or nil
     return true
   end
-  function me.getCraftables(filter)
-    if not w.crafted then return {} end
+  function me.getCpus()
+    local cpus = {}
+    local function add(job)
+      if not job.done and not job.failed and not job.canceled and not job.computing then
+        cpus[#cpus + 1] = {busy = true, cpu = {finalOutput = function()
+          if w.noCraftMonitor then return nil, "No crafting monitor" end
+          return copy(job.descriptor)
+        end}}
+      end
+    end
+    for _, job in ipairs(w.jobs) do add(job) end
+    for _, job in ipairs(w.externalJobs) do add(job) end
+    return cpus
+  end
+  function me.getCraftable(filter, kind)
+    assert(kind == "item")
+    if not w.crafted then return nil end
     local descriptor = copy(filter)
     descriptor.kind, descriptor.label = "item", filter.name
-    return {{getStack = function() return descriptor end, request = function(amount)
-      assert(amount == 1)
+    return {getStack = function() return descriptor end, request = function(amount)
+      assert(amount > 0 and amount % 1 == 0)
       w.requests = w.requests + 1
-      local state = {submitAt = w.time + 0.5, at = w.time + 2, descriptor = descriptor, computing = true}
+      local state = {submitAt = w.time + (w.computeDelay or 0.5), at = w.time + (w.jobDelay or 2),
+        descriptor = descriptor, amount = amount, computing = true}
       w.jobs[#w.jobs + 1] = state
       local function failure()
         return state.failed or state.savedFailure or false, state.failed and "request failed (missing resources)" or "no link"
       end
-      return {hasFailed = failure,
+      state.status = {hasFailed = failure,
         isComputing = function() return state.computing end,
         isCanceled = function()
           if state.computing then return false, "computing" end
@@ -143,7 +148,8 @@ function M.new(config, recipe)
           local failed, reason = failure()
           return not failed, reason
         end}
-    end}}
+      return state.status
+    end}
   end
   local tp = {}
   function tp.getInventorySize(side) return 9 end
@@ -158,7 +164,8 @@ function M.new(config, recipe)
       if w.missingOrb then return nil end
       return {name = "AWWayofTime:archmageBloodOrb", damage = 0, hasTag = true, ownerName = w.owner or h.owner,
         orbTier = 5, networkEssence = w.lp, size = 1}
-    elseif side == h.sourceSide and w.reservation then
+    elseif side == h.orbSide then return w.buffer[slot]
+    elseif side == h.sourceSide and slot == h.interfaceSlot and w.reservation then
       local d = copy(w.reservation)
       if (w.stock[identity.key(d)] or 0) > 0 then d.size = 1; return d end
     elseif side == h.outputSide then return w.blockOutput end
@@ -169,14 +176,37 @@ function M.new(config, recipe)
     return nil, "item is not a fluid container"
   end
   function tp.transferItem(source, target, amount, fromSlot, toSlot)
+    assert(amount == 1)
     if w.blockTransfer then return 0 end
-    assert(source == h.sourceSide and target == h.outputSide and amount == 1)
-    local d = copy(w.reservation)
-    local key = identity.key(d)
-    assert((w.stock[key] or 0) >= 1)
-    w.stock[key] = w.stock[key] - 1
-    w.transfers[#w.transfers + 1] = {time = w.time, descriptor = d, slot = toSlot}
-    if toSlot == h.focusSlot then w.focusAt = w.time else w.catalystAt = w.time end
+    if source == h.sourceSide and target == h.orbSide then
+      if w.blockStage then return 0 end
+      assert(fromSlot == h.interfaceSlot and toSlot ~= h.orbSlot)
+      assert(not tp.getStackInSlot(target, toSlot), "Buffer occupied")
+      local d = copy(w.reservation)
+      local key = identity.key(d)
+      assert((w.stock[key] or 0) >= 1)
+      w.stock[key] = w.stock[key] - 1
+      d.size = 1
+      w.buffer[toSlot] = d
+      w.staged[#w.staged + 1] = {time = w.time, descriptor = d, slot = toSlot}
+    elseif source == h.orbSide and target == h.sourceSide then
+      assert(not w.reservation and toSlot == h.interfaceSlot and fromSlot ~= h.orbSlot)
+      if w.blockReturn then return 0 end
+      local d = assert(w.buffer[fromSlot], "Buffer empty")
+      assert(d.size == 1)
+      w.buffer[fromSlot] = nil
+      w:add(d, (w.stock[identity.key(d)] or 0) + 1)
+      w.returned[#w.returned + 1] = {time = w.time, descriptor = d, slot = fromSlot}
+    else
+      assert(source == h.orbSide and target == h.outputSide and fromSlot ~= h.orbSlot)
+      if w.blockDelivery then return 0 end
+      assert(not tp.getStackInSlot(target, toSlot), "Drop slot occupied")
+      local d = assert(w.buffer[fromSlot], "Buffer empty")
+      assert(d.size == 1)
+      w.buffer[fromSlot] = nil
+      w.transfers[#w.transfers + 1] = {time = w.time, descriptor = d, slot = toSlot}
+      if toSlot == h.focusSlot then w.focusAt = w.time else w.catalystAt = w.time end
+    end
     return 1
   end
   local ritual = {setOutput = function(side, strength)

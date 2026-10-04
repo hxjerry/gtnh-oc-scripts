@@ -15,7 +15,7 @@ function M.main(args)
   local config = configModule.load(path)
   configModule.validate(config)
   model.validate(config, catalog)
-  local journal, interrupted = require("meteor.journal").open(path .. ".journal")
+  local journal, interrupted, stageRecord = require("meteor.journal").open(path .. ".journal")
   local hardware = require("meteor.hardware").new(component, config)
   local controller = require("meteor.controller").new(config, catalog, hardware, computer.uptime, journal)
   local connected, running, ui = false, true
@@ -23,8 +23,8 @@ function M.main(args)
     if connected then return end
     hardware:connect()
     connected = true
-    controller:boot(interrupted)
-    interrupted = false
+    controller:boot(interrupted, stageRecord)
+    interrupted, stageRecord = false, nil
   end
   local callbacks = {}
   function callbacks.save()

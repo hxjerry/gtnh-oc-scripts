@@ -30,7 +30,7 @@ local function setup(options)
   local hw = hardware.new(w.component, config):connect()
   local journal = {}
   local c = controller.new(config, catalog, hw, function() return w.time end,
-    function(dirty, id) journal.dirty, journal.recipe = dirty, id end)
+    function(dirty, id, staging) journal.dirty, journal.recipe, journal.staging = dirty, id, staging end)
   c:boot(false)
   return c, w, config, journal, hw
 end
@@ -47,7 +47,7 @@ end
 local function untilState(c, w, state, seconds)
   for _ = 1, math.ceil((seconds or 90) * 10) do
     tick(c, w)
-    if c.state == state then return end
+    if c.state == state and (state ~= "IDLE" or w.pulses > 0) then return end
     assert(c.state ~= "FAULT", c.lastError)
   end
   error("Never reached " .. state .. "; " .. c.state .. " " .. c.detail)
@@ -100,31 +100,35 @@ test("held no-work HIGH remains valid after disabling filler", function()
   assert(w.fillerReported and w.done and w.outputs.filler == 0)
 end)
 
-test("low LP blocks both transfer and activation", function()
+test("low LP permits buffering but blocks delivery and activation", function()
   local c, w = setup()
   w.lp = 2199999
   c:run("iron", false)
   tick(c, w, 3)
   assert(c.state == "LP" and #w.transfers == 0 and w.pulses == 0)
+  assert(#w.staged == 2 and w.buffer[2] and w.buffer[3])
   w.lp = 2200000
   tick(c, w, 1)
   assert(#w.transfers == 1)
 end)
 
-test("wrong orb owner faults closed", function()
+test("wrong orb owner refuses preparation before moving inputs", function()
   local c, w = setup()
   w.owner = "SomeoneElse"
-  c:run("iron", false)
-  tick(c, w)
-  assert(c.state == "FAULT" and w.pulses == 0 and #w.transfers == 0)
+  raises(function() c:run("iron", false) end, "owner")
+  assert(w.pulses == 0 and #w.staged == 0 and #w.transfers == 0)
 end)
 
-test("missing stock never autocrafts without policy permission", function()
-  local c, w = setup({catalyst = false})
+test("missing stock skips without autocrafting permission or dirtying the site", function()
+  local c, w, _, journal = setup({catalyst = false})
   w.stock[identity.key(recipe.focus)] = 0
   c:run("iron", false)
   tick(c, w, 12)
-  assert(c.state == "FAULT" and w.requests == 0 and w.pulses == 0)
+  assert(c.state == "IDLE" and c.recipe == nil and w.requests == 0 and w.pulses == 0 and not journal.dirty)
+  c:stop()
+  w:add(recipe.focus, 1)
+  tick(c, w, 3)
+  assert(c.mode == "stopped" and #w.staged == 0)
 end)
 
 test("autocraft waits for one exact requested input", function()
@@ -135,61 +139,329 @@ test("autocraft waits for one exact requested input", function()
   assert(w.requests == 1 and w.pulses == 1)
 end)
 
-test("canceled crafting cannot be retried into a ritual", function()
-  local c, w = setup({catalyst = false, craft = true})
+test("canceled crafting yields and retries only after the configured interval", function()
+  local c, w, cfg = setup({catalyst = false, craft = true})
   w.stock[identity.key(recipe.focus)] = 0
   c:run("iron", false)
-  tick(c, w, 0.4)
-  assert(w.jobs[1]); w.jobs[1].canceled = true
-  tick(c, w, 10)
-  assert(c.state == "FAULT" and w.requests == 1 and w.pulses == 0)
-end)
-
-test("saving computing and linked craft status never prevents exact input extraction", function()
-  local c, w, _, _, hw = setup({catalyst = false, craft = true})
-  w.stock[identity.key(recipe.focus)] = 0
-  c:run("iron", false)
-  tick(c, w, 0.3)
-  local job = assert(w.jobs[1])
-  assert(job.computing and not job.linked)
-  w:saveCraftStatuses()
-  local failed, reason = c.input.job.hasFailed()
-  assert(failed and reason == "no link")
-  tick(c, w, 0.5)
-  assert(c.state == "INPUT" and job.linked and not job.done and #w.transfers == 0)
-  w:saveCraftStatuses()
-  failed, reason = c.input.job.hasFailed()
-  assert(failed and reason == "no link" and not c.input.job.isCanceled())
+  w.jobs[1].canceled = true
+  tick(c, w, cfg.craftTimeout - 1)
+  assert(c.state == "IDLE" and w.requests == 1 and w.pulses == 0)
   untilState(c, w, "IDLE")
-  assert(w.requests == 1 and w.pulses == 1 and #w.transfers == 1)
-  assert(identity.same(w.transfers[1].descriptor, recipe.focus) and not hw.ownsSlot)
+  assert(w.requests == 2 and w.pulses == 1)
 end)
 
-test("rejected autocraft faults before extraction even if another source stocks the input", function()
-  local c, w = setup({catalyst = false, craft = true})
+test("saved computing and live craft statuses suppress duplicates beyond timeout", function()
+  local c, w, cfg, _, hw = setup({catalyst = false, craft = true})
   w.stock[identity.key(recipe.focus)] = 0
+  w.computeDelay, w.jobDelay = 12, 24
   c:run("iron", false)
-  tick(c, w, 0.3)
   local job = assert(w.jobs[1])
-  job.failed, job.computing = true, false -- OC fail() ends computing atomically.
-  w:add(recipe.focus, 1)
-  tick(c, w, 1)
-  assert(c.state == "FAULT" and c.lastError:find("Autocraft failed", 1, true))
-  assert(w.requests == 1 and #w.transfers == 0 and w.pulses == 0)
-end)
-
-test("saved active autocraft still times out without requesting another job", function()
-  local c, w = setup({catalyst = false, craft = true})
-  w.stock[identity.key(recipe.focus)] = 0
-  c:run("iron", false)
-  tick(c, w, 0.8)
-  local job = assert(w.jobs[1])
-  job.at = math.huge
-  assert(job.linked)
   w:saveCraftStatuses()
-  tick(c, w, 9)
-  assert(c.state == "FAULT" and c.lastError:find("Autocraft timed out", 1, true))
-  assert(w.requests == 1 and #w.transfers == 0 and w.pulses == 0)
+  tick(c, w, cfg.craftTimeout + 2)
+  assert(job.computing and w.requests == 1 and c.state == "IDLE" and #w.staged == 0)
+  tick(c, w, 3)
+  assert(job.linked and not job.done)
+  w:saveCraftStatuses()
+  tick(c, w, cfg.craftTimeout + 1)
+  assert(w.requests == 1 and c.state == "IDLE" and #w.transfers == 0)
+  untilState(c, w, "IDLE")
+  assert(w.requests == 1 and w.pulses == 1 and identity.same(w.transfers[1].descriptor, recipe.focus))
+  assert(not hw.ownsSlot)
+end)
+
+test("rejected craft does not block exact inputs supplied by another source", function()
+  local c, w = setup({catalyst = false, craft = true})
+  w.stock[identity.key(recipe.focus)] = 0
+  c:run("iron", false)
+  local job = assert(w.jobs[1])
+  job.failed, job.computing = true, false
+  w:add(recipe.focus, 1)
+  untilState(c, w, "IDLE")
+  assert(w.requests == 1 and #w.staged == 1 and w.pulses == 1)
+end)
+
+test("unknown request status uses timeout fallback without faulting the scheduler", function()
+  local c, w, cfg = setup({catalyst = false, craft = true})
+  w.stock[identity.key(recipe.focus)] = 0
+  w.jobDelay = math.huge
+  c:run("iron", false)
+  w.jobs[1].status.isCanceled = function() error("lost status") end
+  w.proxies.me.getCpus = nil
+  tick(c, w, cfg.craftTimeout - 1)
+  assert(c.state == "IDLE" and w.requests == 1)
+  tick(c, w, 2)
+  assert(w.requests == 2 and w.pulses == 0 and #w.staged == 0)
+end)
+
+test("both missing inputs are requested before yielding; samples and orb remain untouched", function()
+  local c, w, cfg, journal = setup({craft = true})
+  local sample = world.item("mod:sample", 9, "\0sample")
+  w.sampleSlots[cfg.hardware.orbSide] = {[2] = {stack = sample}}
+  w.stock[identity.key(recipe.focus)], w.stock[identity.key(recipe.catalyst)] = 0, 0
+  c:run("iron", false)
+  assert(w.requests == 2 and c.recipe == nil and c.state == "IDLE" and not journal.dirty)
+  assert(identity.same(w.jobs[1].descriptor, recipe.catalyst) and identity.same(w.jobs[2].descriptor, recipe.focus))
+  untilState(c, w, "LP")
+  assert(#w.staged == 2 and w.staged[1].slot == 3 and w.staged[2].slot == 4 and journal.dirty)
+  assert(identity.same(w.sampleSlots[0][2].stack, sample) and w.proxies.tp.getStackInSlot(0, 1).ownerName == "Owner")
+  assert(#w.transfers == 0)
+  untilState(c, w, "IDLE")
+  assert(w.pulses == 1 and w.requests == 2 and next(w.buffer) == nil)
+end)
+
+test("unavailable meteor yields to a runnable deficit with or without craft permission", function()
+  for _, craft in ipairs({false, true}) do
+    local c, w, cfg = setup({catalyst = false})
+    local focus = world.item("gregtech:gt.blockmachines", 464)
+    local other = world.item("mod:product", 1); other.label = "Z runnable"
+    c.catalog.recipes[2] = {id = "ready", label = "Ready Meteor", focus = focus, catalyst = recipe.catalyst,
+      lp = recipe.lp, ores = {{key = "oreReady", weight = 100}}}
+    cfg.oreProducts.oreReady = {other}
+    cfg.policies[identity.key(product)] = {active = true, target = 10, meteor = "iron", craft = craft}
+    cfg.policies[identity.key(other)] = {active = true, target = 10, meteor = "ready", craft = false}
+    w:add(focus, 1)
+    w.stock[identity.key(recipe.focus)] = 0
+    w.jobDelay = math.huge
+    c.lastProduct = identity.key(other)
+    c:auto()
+    tick(c, w, 0.1)
+    assert(c.state == "IDLE" and c.recipe == nil and w.requests == (craft and 1 or 0))
+    untilState(c, w, "LP", 3)
+    assert(c.recipe.id == "ready" and identity.same(w.staged[1].descriptor, focus))
+    untilState(c, w, "IDLE")
+    assert(w.pulses == 1 and identity.same(w.transfers[1].descriptor, focus))
+  end
+end)
+
+test("shared catalyst across deficits keeps one live request per exact item", function()
+  local c, w, cfg = setup()
+  local focus = world.item(recipe.focus.name, recipe.focus.damage + 1)
+  local other = world.item("mod:product", 2)
+  c.catalog.recipes[2] = {id = "other", label = "Other", focus = focus, catalyst = recipe.catalyst,
+    lp = recipe.lp, ores = {{key = "oreOther", weight = 100}}}
+  cfg.oreProducts.oreOther = {other}
+  cfg.policies[identity.key(product)] = {active = true, target = 1, meteor = "iron", craft = true}
+  cfg.policies[identity.key(other)] = {active = true, target = 1, meteor = "other", craft = true}
+  w:add(focus, 0)
+  w.stock[identity.key(recipe.focus)], w.stock[identity.key(recipe.catalyst)] = 0, 0
+  w.jobDelay = math.huge
+  c:auto()
+  tick(c, w, 20)
+  local catalysts = 0
+  for _, job in ipairs(w.jobs) do if identity.same(job.descriptor, recipe.catalyst) then catalysts = catalysts + 1 end end
+  assert(w.requests == 3 and catalysts == 1 and c.state == "IDLE" and #w.staged == 0)
+end)
+
+test("external exact crafting output suppresses requests; other metadata and NBT do not", function()
+  local c, w = setup({catalyst = false, craft = true})
+  local focus = world.item("mod:focus", 5, "\0wanted")
+  c.catalog.recipes = {{id = "tagged", label = "Tagged", focus = focus, catalyst = recipe.catalyst,
+    lp = recipe.lp, ores = recipe.ores}}
+  w:add(focus, 0)
+  local external = {descriptor = focus}
+  w.externalJobs = {external}
+  c:run("tagged", false)
+  tick(c, w, 20)
+  assert(w.requests == 0 and c.state == "IDLE")
+  external.descriptor = world.item(focus.name, focus.damage, "\0other")
+  w.externalJobs[2] = {descriptor = world.item(focus.name, focus.damage + 1, focus.tag)}
+  tick(c, w, 2)
+  assert(w.requests == 1 and identity.same(w.jobs[1].descriptor, focus))
+  untilState(c, w, "IDLE")
+  assert(w.pulses == 1 and identity.same(w.transfers[1].descriptor, focus))
+end)
+
+test("unobservable busy CPU gets startup timeout fallback", function()
+  local c, w, cfg = setup({catalyst = false, craft = true})
+  w.stock[identity.key(recipe.focus)] = 0
+  w.externalJobs = {{descriptor = recipe.focus}}
+  w.noCraftMonitor, w.jobDelay = true, math.huge
+  c:run("iron", false)
+  tick(c, w, cfg.craftTimeout - 1)
+  assert(w.requests == 0 and c.state == "IDLE")
+  tick(c, w, 2)
+  assert(w.requests == 1)
+  tick(c, w, cfg.craftTimeout + 1)
+  assert(w.requests == 1 and c.state == "IDLE") -- Own live link remains observable without a monitor.
+end)
+
+test("identical focus and catalyst need two copies but only one craft request", function()
+  local c, w = setup({craft = true})
+  c.catalog.recipes = {{id = "same", label = "Same", focus = recipe.focus, catalyst = recipe.focus,
+    lp = recipe.lp, ores = recipe.ores}}
+  w.stock[identity.key(recipe.focus)] = 0
+  c:run("same", false)
+  assert(w.requests == 1 and w.jobs[1].amount == 2)
+  untilState(c, w, "IDLE")
+  assert(#w.staged == 2 and #w.transfers == 2 and w.pulses == 1 and w.stock[identity.key(recipe.focus)] == 0)
+end)
+
+test("full orb inventory yields without overwriting existing items", function()
+  local c, w, _, journal = setup()
+  w.sampleSlots[0] = {}
+  for slot = 2, 9 do w.sampleSlots[0][slot] = {stack = world.item("mod:sample", slot)} end
+  c:run("iron", false)
+  tick(c, w, 3)
+  assert(c.state == "IDLE" and not journal.dirty and #w.staged == 0)
+  w.sampleSlots[0][8], w.sampleSlots[0][9] = nil, nil
+  untilState(c, w, "LP")
+  assert(w.staged[1].slot == 8 and w.staged[2].slot == 9 and w.sampleSlots[0][2].stack.damage == 2)
+end)
+
+test("buffered ritual delivery has no ME fetch or crafting dependency", function()
+  local c, w = setup()
+  c:run("iron", false)
+  untilState(c, w, "LP")
+  w.networkDown, c.nextStock = true, math.huge
+  untilState(c, w, "IDLE")
+  assert(w.pulses == 1 and w.requests == 0 and #w.staged == 2 and #w.transfers == 2 and next(w.buffer) == nil)
+end)
+
+test("changed buffered metadata faults before delivery", function()
+  local c, w, _, journal = setup({catalyst = false})
+  c:run("iron", false)
+  untilState(c, w, "LP")
+  w.buffer[2].damage = w.buffer[2].damage + 1
+  tick(c, w, 1)
+  assert(c.state == "FAULT" and #w.transfers == 0 and w.pulses == 0 and journal.dirty)
+end)
+
+test("stop and hardware rebinding preserve a live request without duplicate orders", function()
+  local c, w, cfg = setup({catalyst = false, craft = true})
+  w.stock[identity.key(recipe.focus)] = 0
+  w.jobDelay = math.huge
+  c:run("iron", false)
+  c:stop()
+  c.hw = hardware.new(w.component, cfg):connect()
+  w.proxies.me.getCpus = nil
+  c:run("iron", false)
+  tick(c, w, cfg.craftTimeout + 2)
+  assert(w.requests == 1 and c.state == "IDLE")
+  w.jobs[1].at = w.time + 1
+  untilState(c, w, "IDLE")
+  assert(w.pulses == 1 and w.requests == 1)
+end)
+
+test("craft submission errors defer retries without faulting or blocking another input request", function()
+  local c, w, cfg, journal = setup({craft = true})
+  w.stock[identity.key(recipe.focus)], w.stock[identity.key(recipe.catalyst)] = 0, 0
+  local craftable = w.proxies.me.getCraftable
+  w.proxies.me.getCraftable = function(filter, kind)
+    if filter.name == recipe.catalyst.name then error("request rejected") end
+    return craftable(filter, kind)
+  end
+  c:run("iron", false)
+  tick(c, w, cfg.craftTimeout + 1)
+  assert(c.state == "IDLE" and c.recipe == nil and w.requests == 1 and not journal.dirty and #w.staged == 0)
+end)
+
+test("missing patterns and rejected submissions stay nonfaulting until crafting becomes available", function()
+  local c, w, cfg = setup({catalyst = false})
+  cfg.policies[identity.key(product)] = {active = true, target = 1, meteor = "iron", craft = true}
+  w.stock[identity.key(recipe.focus)] = 0
+  w.crafted = false
+  c:auto()
+  tick(c, w, 12)
+  assert(c.state == "IDLE" and w.requests == 0 and w.pulses == 0)
+  w.crafted = true
+  local lookup = w.proxies.me.getCraftable
+  w.proxies.me.getCraftable = function(filter, kind)
+    local craftable = lookup(filter, kind)
+    craftable.request = function() return nil, "no controller" end
+    return craftable
+  end
+  tick(c, w, 10)
+  assert(c.state == "IDLE" and w.requests == 0 and w.pulses == 0)
+  w.proxies.me.getCraftable = lookup
+  untilState(c, w, "IDLE")
+  assert(w.requests == 1 and w.pulses == 1)
+end)
+
+test("submission error after enqueue uses CPU output to prevent duplicate orders", function()
+  local c, w, cfg = setup({catalyst = false, craft = true})
+  w.stock[identity.key(recipe.focus)] = 0
+  w.jobDelay = math.huge
+  local lookup = w.proxies.me.getCraftable
+  w.proxies.me.getCraftable = function(filter, kind)
+    local craftable = lookup(filter, kind)
+    local request = craftable.request
+    craftable.request = function(amount)
+      request(amount)
+      error("response lost after enqueue")
+    end
+    return craftable
+  end
+  c:run("iron", false)
+  tick(c, w, cfg.craftTimeout * 3)
+  assert(c.state == "IDLE" and w.requests == 1 and #w.staged == 0 and w.pulses == 0)
+end)
+
+test("completed craft taken by player is requested again without a fault", function()
+  local c, w, cfg = setup({catalyst = false, craft = true})
+  w.stock[identity.key(recipe.focus)] = 0
+  c:run("iron", false)
+  w:advance(2.1)
+  assert(w.jobs[1].done)
+  w.stock[identity.key(recipe.focus)] = 0 -- Taken before the next controller observation.
+  tick(c, w, cfg.craftTimeout - w.time - 1)
+  assert(c.state == "IDLE" and w.requests == 1)
+  untilState(c, w, "IDLE")
+  assert(w.requests == 2 and w.pulses == 1)
+end)
+
+test("failed input observation yields without fabricating zero stock or ordering", function()
+  local c, w, cfg, journal = setup({catalyst = false, craft = true})
+  local lookup = w.proxies.me.getItemInNetwork
+  w.proxies.me.getItemInNetwork = function(filter)
+    if filter.name == recipe.focus.name then return nil, "temporary query failure" end
+    return lookup(filter)
+  end
+  cfg.policies[identity.key(product)] = {active = true, target = 1, meteor = "iron", craft = true}
+  c:auto()
+  tick(c, w, 10)
+  assert(c.state == "IDLE" and w.requests == 0 and #w.staged == 0 and not journal.dirty)
+end)
+
+test("stock taken during staging returns the partial buffer then yields without fault", function()
+  local c, w, _, journal = setup()
+  c:run("iron", false)
+  tick(c, w, 0.1)
+  assert(#w.staged == 1 and identity.same(w.staged[1].descriptor, recipe.catalyst))
+  w.stock[identity.key(recipe.focus)] = 0
+  tick(c, w, 1)
+  assert(c.state == "IDLE" and not journal.dirty and next(w.buffer) == nil and #w.returned == 1)
+  assert(w.pulses == 0 and #w.transfers == 0 and w.stock[identity.key(recipe.catalyst)] == 4)
+end)
+
+test("buffered item taken before delivery releases remaining inputs without fault", function()
+  local c, w, _, journal = setup()
+  c:run("iron", false)
+  untilState(c, w, "LP")
+  w.buffer[3] = nil
+  w.stock[identity.key(recipe.focus)] = 0
+  tick(c, w, 1)
+  assert(c.state == "IDLE" and not journal.dirty and next(w.buffer) == nil and #w.returned == 1)
+  assert(w.pulses == 0 and #w.transfers == 0)
+end)
+
+test("staging transfer timeout unwinds instead of faulting input preparation", function()
+  local c, w, cfg, journal = setup()
+  w.blockStage = true
+  c:run("iron", false)
+  tick(c, w, cfg.inputTimeout + 0.5)
+  assert(c.state == "IDLE" and not journal.dirty and not w.reservation and #w.staged == 0 and w.pulses == 0)
+end)
+
+test("rejected ME reservation releases preparation without faulting", function()
+  local c, w, _, journal = setup({catalyst = false})
+  local configure = w.proxies.me.setInterfaceConfiguration
+  w.proxies.me.setInterfaceConfiguration = function(slot, descriptor)
+    if descriptor then return false end
+    return configure(slot)
+  end
+  c:run("iron", false)
+  tick(c, w, 0.5)
+  assert(c.state == "IDLE" and not journal.dirty and not w.reservation and #w.staged == 0 and w.pulses == 0)
 end)
 
 test("enabled but idle drilling plants never authorize filler", function()
@@ -248,17 +520,23 @@ test("plant disconnection stops the whole site", function()
   assert(not w.plantStates[1].allowed)
 end)
 
-test("transfer followed by clear failure never duplicates input", function()
-  local c, w = setup({catalyst = false})
+test("staging followed by clear failure remains journaled and never duplicates input", function()
+  local c, w, _, journal = setup({catalyst = false})
   w.failClear = true
   c:run("iron", false)
   tick(c, w, 5)
-  assert(c.state == "FAULT" and #w.transfers == 1 and w.pulses == 0)
+  assert(c.state == "FAULT" and #w.staged == 1 and #w.transfers == 0 and w.pulses == 0 and journal.dirty)
+  w.failClear = false
+  raises(function() c:reset() end, "buffer slot")
+  assert(journal.dirty)
+  w.buffer = {}
+  c:reset()
+  assert(not journal.dirty and c.mode == "stopped")
 end)
 
 test("non-callable ME fields cannot masquerade as required callbacks", function()
   local _, w, cfg = setup()
-  w.proxies.me.getItemsInNetwork = {}
+  w.proxies.me.getItemInNetwork = {}
   local fresh = hardware.new(w.component, cfg)
   raises(function() fresh:connect() end)
   assert(w.pulses == 0 and #w.transfers == 0 and w.outputs.ritual == 0 and w.outputs.filler == 0)
@@ -319,7 +597,7 @@ test("absent item and fluid targets count as zero despite other metadata stock",
   cfg.policies[identity.key(fluid)] = {active = true, target = 144, meteor = "iron", craft = false}
   c:auto()
   tick(c, w)
-  assert(c.state == "LP")
+  assert(c.state == "STAGING" and c.recipe == nil)
   for _, row in ipairs(c.rows) do assert(row.stock == 0) end
 end)
 
@@ -703,6 +981,30 @@ test("explicit close failure prevents config replacement", function()
   raises(function() configModule.save(path, config) end)
   runtime.fs.failCloseTo = nil
   assert(configModule.load(path).reserveLP == 123456)
+end)
+
+test("restart requires clearing journaled buffer slots before acknowledging recovery", function()
+  local c, w, cfg, _, hw = setup()
+  local path = "/etc/meteor/buffer-state"
+  c.journal = require("meteor.journal").open(path)
+  w.lp = 0
+  c:run("iron", false)
+  untilState(c, w, "LP")
+  c:stop()
+  local save, interrupted, record = require("meteor.journal").open(path)
+  local restarted = controller.new(cfg, c.catalog, hw, function() return w.time end, save)
+  restarted:boot(interrupted, record)
+  tick(restarted, w, 10)
+  assert(restarted.state == "FAULT" and #w.staged == 2 and #w.transfers == 0 and w.pulses == 0)
+  raises(function() restarted:reset() end, "buffer slot")
+  local _, stillDirty = require("meteor.journal").open(path)
+  assert(stillDirty)
+  w.buffer = {}
+  restarted:reset()
+  tick(restarted, w, 3)
+  local _, clean = require("meteor.journal").open(path)
+  assert(not clean and restarted.mode == "stopped" and w.pulses == 0)
+  assert(w.proxies.tp.getStackInSlot(0, 1).ownerName == cfg.hardware.owner)
 end)
 
 test("journal restart latches dirty intent and clears on acknowledgement", function()

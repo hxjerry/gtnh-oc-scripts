@@ -253,7 +253,7 @@ function M.new(gpu, config, catalog, callbacks)
         {"Reserve LP", "reserveLP", "number"}, {"Meteor wait (seconds)", "meteorWait", "number"},
         {"Input timeout (seconds)", "inputTimeout", "number"}, {"Mining timeout (seconds)", "miningTimeout", "number"},
         {"Filler timeout (seconds)", "fillerTimeout", "number"}, {"Filler input settle (seconds)", "fillerStartDelay", "number"},
-        {"Craft timeout (seconds)", "craftTimeout", "number"},
+        {"Craft retry interval (seconds)", "craftTimeout", "number"},
         {"Cooldown (seconds)", "cooldown", "number"}
       }
       local out = {}
@@ -651,10 +651,10 @@ function M.new(gpu, config, catalog, callbacks)
   function self:drawConfirm()
     self:clear(); self:header("CONFIRM ACTION"); self:notice()
     local action = self.confirmAction
-    local prompt = action == "shutdown" and "Stop and quit Meteor?" or "Reset after inspection: remove stray focus, MRS inactive, area clear, plants stopped/retracted. Idle filler HIGH is allowed."
+    local prompt = action == "shutdown" and "Stop and quit Meteor?" or "Reset after inspection: clear buffered inputs/drop slots, remove stray focus, MRS inactive, area clear, plants stopped/retracted."
     self:put(3, 7, prompt, COLORS.yellow)
     if action == "reset" then
-      self:put(3, 9, "Reset acknowledges recovery; it does not resume auto/loop. Ritual uses an edge activator, never direct MRS redstone.", COLORS.red)
+      self:put(3, 9, "Leave the orb; empty recorded buffer slots. Idle filler HIGH is allowed. Reset does not resume automation.", COLORS.red)
       self:put(3, 10, "[Yes]   [No]", COLORS.cyan)
     else
       self:put(3, 9, "[Yes]   [No]", COLORS.cyan)
@@ -687,6 +687,7 @@ function M.new(gpu, config, catalog, callbacks)
       if self.screen == "hardware" then
         self:put(2, 31, "Ritual address is an edge-triggered activator with bound crystal; do not wire it directly to MRS.", COLORS.yellow)
         self:put(2, 32, "Owner must exactly match the activation crystal/orb owner name. Source side is the dedicated ME interface.", COLORS.yellow)
+        self:put(2, 33, "Keep two empty orb-inventory slots for focus/catalyst buffering (one when catalyst is disabled).", COLORS.yellow)
       end
       if self.screen == "recipeDetail" and self.pendingRecipe then
         local recipe = self.pendingRecipe

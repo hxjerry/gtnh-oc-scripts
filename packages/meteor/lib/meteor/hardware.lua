@@ -1,12 +1,14 @@
 local identity = require("meteor.identity")
 local M, Hardware = {}, {}
 Hardware.__index = Hardware
+local function callable(method)
+  local mt = type(method) == "table" and getmetatable(method)
+  return type(method) == "function" or (type(mt) == "table" and type(mt.__call) == "function")
+end
 local function need(proxy, methods, label)
   for _, name in ipairs(methods) do
-    local method = proxy[name]
-    local mt = type(method) == "table" and getmetatable(method)
     -- OC component.proxy exposes methods as tables with a callable metatable.
-    assert(type(method) == "function" or (type(mt) == "table" and type(mt.__call) == "function"),
+    assert(callable(proxy[name]),
       label .. " lacks " .. name)
   end
   return proxy
@@ -14,6 +16,20 @@ end
 local function number(value, label)
   assert(type(value) == "number" and value == value and value >= 0 and value < math.huge, "Invalid " .. label)
   return value
+end
+local function readSlot(transposer, side, slot)
+  local stack, err = transposer.getStackInSlot(side, slot)
+  assert(err == nil, "Inventory read failed: " .. tostring(err))
+  if not stack then return nil end
+  if number(stack.size, "stack size") == 0 then return nil end
+  return stack
+end
+local function inventorySize(transposer, side)
+  local size, err = transposer.getInventorySize(side)
+  assert(err == nil, "Inventory size read failed: " .. tostring(err))
+  size = number(size, "inventory size")
+  assert(size > 0 and size % 1 == 0, "Missing inventory on side " .. side)
+  return size
 end
 local function isPlant(name)
   -- Registered Ore Drilling Plant I-IV family; no other GT machine is controlled.
@@ -49,7 +65,7 @@ function Hardware:connect()
   self.ritual.setOutput(h.ritualSide, 0)
   self.filler = need(proxy(h.filler, "redstone"), {"setOutput", "getInput"}, "Filler redstone")
   self.filler.setOutput(h.fillerOutSide, 0)
-  self.me = need(proxy(h.me, "me_interface"), {"getItemInNetwork", "getFluidInNetwork", "getItemsInNetwork", "getCraftables", "setInterfaceConfiguration", "getInterfaceConfiguration"}, "Block ME interface")
+  self.me = need(proxy(h.me, "me_interface"), {"getItemInNetwork", "getFluidInNetwork", "getCraftable", "setInterfaceConfiguration", "getInterfaceConfiguration"}, "Block ME interface")
   self.transposer = need(proxy(h.transposer, "transposer"), {"getStackInSlot", "getInventorySize", "getFluidInContainerInSlot", "transferItem"}, "Transposer")
   for _, side in ipairs({h.sourceSide, h.orbSide, h.outputSide}) do
     assert(number(self.transposer.getInventorySize(side), "inventory size") > 0, "Missing inventory on side " .. side)
@@ -130,29 +146,68 @@ function Hardware:stock(rows)
   return counts
 end
 function Hardware:inputCount(descriptor)
-  local values, reason = self.me.getItemsInNetwork(identity.filter(descriptor))
-  assert(type(values) == "table", "ME input read failed: " .. tostring(reason))
-  local count = 0
-  for _, stack in pairs(values) do
-    if identity.same(identity.fromStack(stack), descriptor) then count = count + number(stack.size, "input stock") end
-  end
-  return count
+  local stack, reason = self.me.getItemInNetwork(identity.filter(descriptor))
+  assert(reason == nil, "ME input read failed: " .. tostring(reason))
+  if not stack then return 0 end
+  assert(identity.same(identity.fromStack(stack), descriptor), "ME returned a different input")
+  return number(stack.size, "input stock")
 end
-function Hardware:request(descriptor)
-  local values, reason = self.me.getCraftables(identity.filter(descriptor))
-  assert(type(values) == "table", "Craftable lookup failed: " .. tostring(reason))
-  local match
-  for _, craftable in pairs(values) do
-    local stack = craftable.getStack()
-    if stack and identity.same(identity.fromStack(stack), descriptor) then
-      assert(not match, "Ambiguous exact crafting pattern for " .. descriptor.name)
-      match = craftable
-    end
-  end
-  assert(match, "No exact autocrafting pattern for " .. identity.describe(descriptor))
-  local job, err = match.request(1)
+function Hardware:request(descriptor, amount)
+  assert(type(amount) == "number" and amount > 0 and amount < math.huge and amount % 1 == 0, "Invalid craft amount")
+  local craftable, reason = self.me.getCraftable(identity.filter(descriptor), "item")
+  assert(reason == nil, "Craftable lookup failed: " .. tostring(reason))
+  assert(craftable, "No exact autocrafting pattern for " .. identity.describe(descriptor))
+  need(craftable, {"getStack", "request"}, "Craftable")
+  local stack = craftable.getStack()
+  assert(stack and identity.same(identity.fromStack(stack), descriptor), "Craftable returned a different input")
+  local job, err = craftable.request(amount)
   assert(job, "Craft request failed: " .. tostring(err))
   return job
+end
+function Hardware:craftStatus(job)
+  local ok, status, reason = pcall(function()
+    need(job, {"isCanceled", "isDone", "hasFailed"}, "Crafting status")
+    local canceled, why = job.isCanceled()
+    assert(type(canceled) == "boolean", "Invalid craft cancellation status")
+    if canceled then
+      local failed, failure = job.hasFailed()
+      assert(type(failed) == "boolean", "Invalid craft failure status")
+      if failed and failure == "no link" then return nil, failure end
+      return failed and "failed" or "canceled", failure or why
+    end
+    local done, detail = job.isDone()
+    assert(type(done) == "boolean", "Invalid craft completion status")
+    if detail == "no link" then return nil, detail end
+    return done and "done" or "active", detail
+  end)
+  if not ok then return nil, status end
+  return status, reason
+end
+function Hardware:crafting(descriptor)
+  local ok, active, reason = pcall(function()
+    need(self.me, {"getCpus"}, "Block ME interface")
+    local cpus, err = self.me.getCpus()
+    assert(err == nil and type(cpus) == "table", "Cannot inspect crafting CPUs: " .. tostring(err))
+    local unknown
+    for _, entry in pairs(cpus) do
+      assert(type(entry.busy) == "boolean", "Invalid crafting CPU state")
+      if entry.busy then
+        local observed, output = pcall(function()
+          need(entry.cpu, {"finalOutput"}, "Crafting CPU")
+          local stack, why = entry.cpu.finalOutput()
+          assert(stack, "Cannot inspect crafting output: " .. tostring(why))
+          return identity.fromStack(stack)
+        end)
+        if observed then
+          if identity.same(output, descriptor) then return true end
+        else unknown = tostring(output) end
+      end
+    end
+    if unknown then return nil, unknown end
+    return false
+  end)
+  if not ok then return nil, active end
+  return active, reason
 end
 function Hardware:readLP()
   local h = self.config.hardware
@@ -190,20 +245,70 @@ function Hardware:recoverInput()
   self.ownsSlot = true
   self:clearInput()
 end
-function Hardware:transferInput(descriptor, slot)
+function Hardware:stageSlots(count)
+  local h, slots = self.config.hardware, {}
+  local size = inventorySize(self.transposer, h.orbSide)
+  for slot = 1, size do
+    if slot ~= h.orbSlot and not readSlot(self.transposer, h.orbSide, slot) then
+      slots[#slots + 1] = slot
+      if #slots == count then return slots end
+    end
+  end
+  return nil, "Need " .. count .. " empty orb-inventory slots (excluding the orb)"
+end
+function Hardware:stageInput(descriptor, slot)
   local h = self.config.hardware
-  local stack, err = self.transposer.getStackInSlot(h.sourceSide, h.interfaceSlot)
-  assert(err == nil, "ME source read failed: " .. tostring(err))
-  if not stack or (stack.size or 0) == 0 then return false end
+  assert(slot ~= h.orbSlot and slot >= 1 and slot <= inventorySize(self.transposer, h.orbSide), "Invalid buffer slot")
+  assert(not readSlot(self.transposer, h.orbSide, slot), "Orb buffer slot must be empty before staging")
+  local stack = readSlot(self.transposer, h.sourceSide, h.interfaceSlot)
+  if not stack then return false end
   assert(identity.same(identity.fromStack(stack), descriptor), "Wrong metadata/NBT in ME staging slot")
-  local destination, destError = self.transposer.getStackInSlot(h.outputSide, slot)
-  assert(destError == nil, "Drop inventory read failed: " .. tostring(destError))
-  assert(not destination or (destination.size or 0) == 0, "Drop slot must be empty before transfer")
-  local moved, why = self.transposer.transferItem(h.sourceSide, h.outputSide, 1, h.interfaceSlot, slot)
-  assert(type(moved) == "number", "Transfer failed: " .. tostring(why))
-  assert(moved == 0 or moved == 1, "Unexpected transfer count")
+  local moved, why = self.transposer.transferItem(h.sourceSide, h.orbSide, 1, h.interfaceSlot, slot)
+  assert(why == nil and (moved == 0 or moved == 1), "Staging transfer failed: " .. tostring(why))
   if moved == 1 then self:clearInput(); return true end
   return false
+end
+function Hardware:verifyStaged(inputs)
+  local h = self.config.hardware
+  for _, input in ipairs(inputs) do
+    assert(input.slot ~= h.orbSlot, "Cannot use blood orb slot as buffer")
+    local stack = readSlot(self.transposer, h.orbSide, input.slot)
+    if not stack then return false end
+    assert(stack.size == 1 and identity.same(identity.fromStack(stack), input.descriptor),
+      "Buffered input changed: " .. input.role)
+  end
+  return true
+end
+function Hardware:deliverInput(descriptor, stagedSlot, dropSlot)
+  local h = self.config.hardware
+  if not self:verifyStaged({{descriptor = descriptor, slot = stagedSlot, role = descriptor.name}}) then return false end
+  assert(not readSlot(self.transposer, h.outputSide, dropSlot), "Drop slot must be empty before transfer")
+  local moved, why = self.transposer.transferItem(h.orbSide, h.outputSide, 1, stagedSlot, dropSlot)
+  assert(why == nil and (moved == 0 or moved == 1), "Delivery transfer failed: " .. tostring(why))
+  return moved == 1
+end
+function Hardware:returnInput(descriptor, stagedSlot)
+  local h = self.config.hardware
+  assert(not self.ownsSlot, "Clear ME reservation before returning inputs")
+  if not self:verifyStaged({{descriptor = descriptor, slot = stagedSlot, role = descriptor.name}}) then return true end
+  local destination = readSlot(self.transposer, h.sourceSide, h.interfaceSlot)
+  if destination and not identity.same(identity.fromStack(destination), descriptor) then return false end
+  local moved, why = self.transposer.transferItem(h.orbSide, h.sourceSide, 1, stagedSlot, h.interfaceSlot)
+  assert(why == nil and (moved == 0 or moved == 1), "Return transfer failed: " .. tostring(why))
+  return moved == 1
+end
+function Hardware:checkStageEmpty(record)
+  assert(type(record) == "table" and type(record.transposer) == "string" and record.transposer ~= ""
+    and type(record.side) == "number" and record.side >= 0 and record.side <= 5 and record.side % 1 == 0
+    and type(record.slots) == "table" and #record.slots > 0, "Invalid staging journal; inspect buffered inputs")
+  assert(self.component.type(record.transposer) == "transposer", "Reconnect original staging transposer for recovery")
+  local transposer = need(self.component.proxy(record.transposer), {"getInventorySize", "getStackInSlot"}, "Staging transposer")
+  local size = inventorySize(transposer, record.side)
+  for _, slot in ipairs(record.slots) do
+    assert(type(slot) == "number" and slot >= 1 and slot <= size and slot % 1 == 0, "Invalid journal buffer slot")
+    assert(not readSlot(transposer, record.side, slot), "Empty recorded orb buffer slot " .. slot .. " before recovery")
+  end
+  return true
 end
 function Hardware:ritualOutput(enabled)
   self.ritual.setOutput(self.config.hardware.ritualSide, enabled and 15 or 0)
